@@ -1,0 +1,880 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Midjourney API - Супер админ панель</title>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: #f0f2f5; }
+        
+        /* Основные стили */
+        .container { max-width: 1600px; margin: 0 auto; padding: 20px; }
+        
+        .header { 
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white; padding: 30px; border-radius: 16px; margin-bottom: 30px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.15);
+        }
+        
+        .header h1 { font-size: 2.5rem; margin-bottom: 10px; }
+        
+        /* Карточки статистики */
+        .stats-grid { 
+            display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); 
+            gap: 20px; margin-bottom: 30px; 
+        }
+        
+        .stat-card { 
+            background: white; padding: 25px; border-radius: 16px;
+            box-shadow: 0 2px 20px rgba(0,0,0,0.08);
+            transition: transform 0.3s ease, box-shadow 0.3s ease;
+            border: 2px solid transparent;
+        }
+        
+        .stat-card:hover {
+            transform: translateY(-5px);
+            box-shadow: 0 5px 30px rgba(0,0,0,0.15);
+        }
+        
+        .stat-card.primary { border-color: #667eea; }
+        .stat-card.success { border-color: #48bb78; }
+        .stat-card.warning { border-color: #ed8936; }
+        .stat-card.danger { border-color: #f56565; }
+        
+        .stat-icon { font-size: 2rem; margin-bottom: 10px; }
+        .stat-number { font-size: 2.5rem; font-weight: bold; margin-bottom: 5px; }
+        .stat-label { color: #718096; font-size: 0.9rem; }
+        
+        /* Карточки */
+        .card { 
+            background: white; border-radius: 16px; padding: 30px; margin-bottom: 25px;
+            box-shadow: 0 2px 20px rgba(0,0,0,0.08);
+        }
+        
+        .card-header {
+            display: flex; justify-content: space-between; align-items: center;
+            margin-bottom: 25px; padding-bottom: 20px; border-bottom: 2px solid #e2e8f0;
+        }
+        
+        .card h2 { color: #2d3748; font-size: 1.8rem; }
+        
+        /* Табы */
+        .tabs {
+            display: flex; gap: 10px; margin-bottom: 25px; border-bottom: 2px solid #e2e8f0;
+        }
+        
+        .tab {
+            padding: 12px 24px; cursor: pointer; border-radius: 8px 8px 0 0;
+            transition: all 0.3s ease; font-weight: 600;
+        }
+        
+        .tab:hover { background: #f7fafc; }
+        .tab.active { 
+            background: #667eea; color: white;
+            box-shadow: 0 -3px 10px rgba(102, 126, 234, 0.3);
+        }
+        
+        /* Формы */
+        .form-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 20px; }
+        
+        .form-group { margin-bottom: 20px; }
+        .form-label { 
+            display: block; margin-bottom: 8px; font-weight: 600; color: #4a5568;
+            font-size: 0.9rem; text-transform: uppercase; letter-spacing: 0.5px;
+        }
+        
+        .form-input, .form-select { 
+            width: 100%; padding: 12px 16px; border: 2px solid #e2e8f0; border-radius: 10px;
+            font-size: 14px; transition: all 0.3s ease;
+        }
+        
+        .form-input:focus, .form-select:focus { 
+            outline: none; border-color: #667eea;
+            box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
+        }
+        
+        /* Кнопки */
+        .btn { 
+            padding: 12px 24px; border: none; border-radius: 10px; font-weight: 600;
+            cursor: pointer; transition: all 0.3s ease; text-decoration: none;
+            display: inline-block; text-align: center; font-size: 14px;
+        }
+        
+        .btn-primary { background: #667eea; color: white; }
+        .btn-primary:hover { background: #5a67d8; transform: translateY(-2px); box-shadow: 0 5px 15px rgba(102, 126, 234, 0.4); }
+        
+        .btn-success { background: #48bb78; color: white; }
+        .btn-success:hover { background: #38a169; transform: translateY(-2px); }
+        
+        .btn-warning { background: #ed8936; color: white; }
+        .btn-warning:hover { background: #dd6b20; transform: translateY(-2px); }
+        
+        .btn-danger { background: #f56565; color: white; }
+        .btn-danger:hover { background: #e53e3e; transform: translateY(-2px); }
+        
+        .btn-sm { padding: 8px 16px; font-size: 12px; }
+        
+        /* Пользователи */
+        .user-card { 
+            border: 2px solid #e2e8f0; border-radius: 12px; padding: 20px; margin: 15px 0;
+            background: #f8fafc; transition: all 0.3s ease; position: relative;
+        }
+        
+        .user-card:hover { border-color: #667eea; background: white; box-shadow: 0 5px 20px rgba(0,0,0,0.1); }
+        
+        .user-card.blocked { background: #fed7d7; border-color: #fc8181; }
+        .user-card.admin { background: #e9d8fd; border-color: #b794f4; }
+        
+        .user-header { 
+            display: flex; justify-content: space-between; align-items: start; margin-bottom: 15px;
+        }
+        
+        .user-info { flex: 1; }
+        .user-email { font-size: 1.2rem; font-weight: bold; color: #2d3748; margin-bottom: 5px; }
+        .user-role { 
+            display: inline-block; padding: 4px 12px; border-radius: 20px; 
+            font-size: 0.8rem; font-weight: bold; margin-left: 10px;
+        }
+        .role-admin { background: #9f7aea; color: white; }
+        .role-user { background: #4299e1; color: white; }
+        
+        .user-status { 
+            padding: 6px 16px; border-radius: 20px; font-size: 0.8rem; font-weight: bold;
+        }
+        .status-active { background: #c6f6d5; color: #22543d; }
+        .status-blocked { background: #fed7d7; color: #742a2a; }
+        
+        .user-details { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px; }
+        
+        .detail-group { 
+            background: white; padding: 15px; border-radius: 8px; 
+            border-left: 4px solid #667eea;
+        }
+        
+        .detail-label { font-weight: 600; color: #718096; margin-bottom: 5px; font-size: 0.85rem; }
+        .detail-value { 
+            font-family: 'Monaco', 'Menlo', monospace; font-size: 0.9rem; 
+            color: #2d3748; word-break: break-all;
+        }
+        
+        .user-actions { 
+            display: flex; gap: 10px; margin-top: 15px; flex-wrap: wrap;
+        }
+        
+        /* Прогресс бар */
+        .progress-bar { 
+            background: #e2e8f0; height: 10px; border-radius: 5px; overflow: hidden; 
+            margin: 10px 0; position: relative;
+        }
+        
+        .progress-fill { 
+            height: 100%; background: linear-gradient(90deg, #48bb78, #38a169); 
+            transition: width 0.3s ease; position: relative;
+        }
+        
+        .progress-text {
+            position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+            font-size: 0.7rem; font-weight: bold; color: #2d3748;
+        }
+        
+        /* Модальные окна */
+        .modal { 
+            display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+            background: rgba(0,0,0,0.5); z-index: 1000; animation: fadeIn 0.3s ease;
+        }
+        
+        @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+        
+        .modal-content { 
+            background: white; margin: 5% auto; padding: 40px; border-radius: 16px;
+            max-width: 600px; position: relative; animation: slideIn 0.3s ease;
+            max-height: 80vh; overflow-y: auto;
+        }
+        
+        @keyframes slideIn { 
+            from { transform: translateY(-50px); opacity: 0; } 
+            to { transform: translateY(0); opacity: 1; }
+        }
+        
+        .close { 
+            position: absolute; top: 20px; right: 25px; font-size: 28px; 
+            cursor: pointer; color: #718096; transition: color 0.3s ease;
+        }
+        .close:hover { color: #2d3748; }
+        
+        /* История */
+        .history-item {
+            background: #f7fafc; padding: 15px; border-radius: 8px; margin: 10px 0;
+            border-left: 3px solid #667eea;
+        }
+        
+        .history-header { display: flex; justify-content: space-between; margin-bottom: 10px; }
+        .history-time { color: #718096; font-size: 0.85rem; }
+        
+        /* Алерты */
+        .alert { 
+            padding: 16px 20px; border-radius: 10px; margin: 15px 0; 
+            display: flex; align-items: center; gap: 10px;
+            animation: slideDown 0.3s ease;
+        }
+        
+        @keyframes slideDown {
+            from { transform: translateY(-20px); opacity: 0; }
+            to { transform: translateY(0); opacity: 1; }
+        }
+        
+        .alert-success { background: #c6f6d5; border: 1px solid #9ae6b4; color: #22543d; }
+        .alert-error { background: #fed7d7; border: 1px solid #fc8181; color: #742a2a; }
+        .alert-warning { background: #feebc8; border: 1px solid #f6ad55; color: #744210; }
+        
+        /* Загрузка */
+        .loading { 
+            display: inline-block; width: 20px; height: 20px; 
+            border: 3px solid #f3f3f3; border-top: 3px solid #667eea;
+            border-radius: 50%; animation: spin 1s linear infinite;
+        }
+        
+        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+        
+        /* Переключатель */
+        .switch {
+            position: relative; display: inline-block; width: 50px; height: 24px;
+        }
+        
+        .switch input { opacity: 0; width: 0; height: 0; }
+        
+        .slider {
+            position: absolute; cursor: pointer; top: 0; left: 0; right: 0; bottom: 0;
+            background-color: #cbd5e0; transition: .4s; border-radius: 24px;
+        }
+        
+        .slider:before {
+            position: absolute; content: ""; height: 16px; width: 16px; left: 4px;
+            bottom: 4px; background-color: white; transition: .4s; border-radius: 50%;
+        }
+        
+        input:checked + .slider { background-color: #48bb78; }
+        input:checked + .slider:before { transform: translateX(26px); }
+        
+        /* Адаптивность */
+        @media (max-width: 768px) {
+            .stats-grid { grid-template-columns: 1fr 1fr; }
+            .form-grid { grid-template-columns: 1fr; }
+            .user-details { grid-template-columns: 1fr; }
+            .modal-content { margin: 10% 20px; padding: 20px; }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <!-- Header -->
+        <div class="header">
+            <h1>🎨 Midjourney API - Супер админ панель</h1>
+            <p>Полное управление пользователями, лимитами и генерациями</p>
+        </div>
+
+        <!-- Статистика -->
+        <div class="stats-grid">
+            <div class="stat-card primary">
+                <div class="stat-icon">👥</div>
+                <div class="stat-number" id="totalUsers">0</div>
+                <div class="stat-label">Всего пользователей</div>
+            </div>
+            <div class="stat-card success">
+                <div class="stat-icon">✅</div>
+                <div class="stat-number" id="activeUsers">0</div>
+                <div class="stat-label">Активных пользователей</div>
+            </div>
+            <div class="stat-card danger">
+                <div class="stat-icon">🔒</div>
+                <div class="stat-number" id="blockedUsers">0</div>
+                <div class="stat-label">Заблокированных</div>
+            </div>
+            <div class="stat-card warning">
+                <div class="stat-icon">👑</div>
+                <div class="stat-number" id="adminUsers">0</div>
+                <div class="stat-label">Администраторов</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-icon">🎨</div>
+                <div class="stat-number" id="totalGenerations">0</div>
+                <div class="stat-label">Всего генераций</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-icon">📊</div>
+                <div class="stat-number" id="totalLimits">0</div>
+                <div class="stat-label">Общий лимит</div>
+            </div>
+        </div>
+
+        <!-- Табы -->
+        <div class="tabs">
+            <div class="tab active" onclick="showTab('users')">👥 Пользователи</div>
+            <div class="tab" onclick="showTab('create')">➕ Создать пользователя</div>
+            <div class="tab" onclick="showTab('history')">📜 История генераций</div>
+        </div>
+
+        <!-- Вкладка: Пользователи -->
+        <div id="users-tab" class="tab-content">
+            <div class="card">
+                <div class="card-header">
+                    <h2>👥 Управление пользователями</h2>
+                    <button onclick="loadUsers()" class="btn btn-success">🔄 Обновить</button>
+                </div>
+                
+                <!-- Фильтры -->
+                <div style="display: flex; gap: 15px; margin-bottom: 20px; flex-wrap: wrap;">
+                    <select id="filterRole" onchange="filterUsers()" class="form-select" style="width: auto;">
+                        <option value="">Все роли</option>
+                        <option value="user">Пользователи</option>
+                        <option value="admin">Администраторы</option>
+                    </select>
+                    <select id="filterStatus" onchange="filterUsers()" class="form-select" style="width: auto;">
+                        <option value="">Все статусы</option>
+                        <option value="active">Активные</option>
+                        <option value="blocked">Заблокированные</option>
+                    </select>
+                    <input type="text" id="searchUser" placeholder="Поиск по email..." class="form-input" style="width: 300px;" onkeyup="filterUsers()">
+                </div>
+                
+                <div id="usersList"></div>
+            </div>
+        </div>
+
+        <!-- Вкладка: Создать пользователя -->
+        <div id="create-tab" class="tab-content" style="display: none;">
+            <div class="card">
+                <h2>➕ Создать нового пользователя</h2>
+                <form id="createUserForm">
+                    <div class="form-grid">
+                        <div class="form-group">
+                            <label class="form-label">📧 Email пользователя</label>
+                            <input type="email" id="userEmail" class="form-input" placeholder="user@example.com" required>
+                        </div>
+                        <div class="form-group">
+                            <label class="form-label">👤 Роль пользователя</label>
+                            <select id="userRole" class="form-select" onchange="toggleLimitInput()">
+                                <option value="user">Обычный пользователь</option>
+                                <option value="admin">Администратор (без лимитов)</option>
+                            </select>
+                        </div>
+                    </div>
+                    
+                    <div class="form-group" id="limitGroup">
+                        <label class="form-label">📊 Месячный лимит генераций</label>
+                        <input type="number" id="monthlyLimit" class="form-input" value="50" min="1" max="10000">
+                    </div>
+                    
+                    <h3 style="margin: 30px 0 20px 0; color: #4a5568;">🔧 Discord настройки</h3>
+                    <div class="form-grid">
+                        <div class="form-group">
+                            <label class="form-label">🏠 Discord Server ID</label>
+                            <input type="text" id="serverId" class="form-input" placeholder="1378677603203813386" required>
+                        </div>
+                        <div class="form-group">
+                            <label class="form-label">💬 Discord Channel ID</label>
+                            <input type="text" id="channelId" class="form-input" placeholder="1378677603203813389" required>
+                        </div>
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">🔑 Discord User Token</label>
+                        <input type="text" id="salaiToken" class="form-input" placeholder="MTM3ODY3NTgwOTE5NTEzMDkwMQ..." required>
+                    </div>
+                    
+                    <button type="submit" class="btn btn-primary" style="width: 100%; padding: 16px; font-size: 16px; margin-top: 20px;">
+                        ✨ Создать пользователя
+                    </button>
+                </form>
+                <div id="createResult"></div>
+            </div>
+        </div>
+
+        <!-- Вкладка: История -->
+        <div id="history-tab" class="tab-content" style="display: none;">
+            <div class="card">
+                <div class="card-header">
+                    <h2>📜 История генераций</h2>
+                    <button onclick="loadHistory()" class="btn btn-success">🔄 Обновить</button>
+                </div>
+                <div id="historyList"></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Модальное окно для деталей пользователя -->
+    <div id="userModal" class="modal">
+        <div class="modal-content">
+            <span class="close" onclick="closeModal()">&times;</span>
+            <div id="modalContent"></div>
+        </div>
+    </div>
+
+    <!-- Модальное окно редактирования -->
+    <div id="editModal" class="modal">
+        <div class="modal-content">
+            <span class="close" onclick="closeEditModal()">&times;</span>
+            <h2>✏️ Редактировать пользователя</h2>
+            <form id="editForm">
+                <input type="hidden" id="editApiKey">
+                <div class="form-group">
+                    <label class="form-label">📧 Email</label>
+                    <input type="email" id="editEmail" class="form-input" required>
+                </div>
+                <div class="form-group">
+                    <label class="form-label">👤 Роль</label>
+                    <select id="editRole" class="form-select" onchange="toggleEditLimit()">
+                        <option value="user">Пользователь</option>
+                        <option value="admin">Администратор</option>
+                    </select>
+                </div>
+                <div class="form-group" id="editLimitGroup">
+                    <label class="form-label">📊 Месячный лимит</label>
+                    <input type="number" id="editLimit" class="form-input" min="1" max="10000">
+                </div>
+                <button type="submit" class="btn btn-primary" style="width: 100%;">💾 Сохранить изменения</button>
+            </form>
+        </div>
+    </div>
+
+    <script>
+        let allUsers = [];
+
+        // Переключение табов
+        function showTab(tabName) {
+            document.querySelectorAll('.tab').forEach(tab => tab.classList.remove('active'));
+            document.querySelectorAll('.tab-content').forEach(content => content.style.display = 'none');
+            
+            event.target.classList.add('active');
+            document.getElementById(`${tabName}-tab`).style.display = 'block';
+            
+            if (tabName === 'history') loadHistory();
+        }
+
+        // Переключение лимита при выборе роли
+        function toggleLimitInput() {
+            const role = document.getElementById('userRole').value;
+            document.getElementById('limitGroup').style.display = role === 'admin' ? 'none' : 'block';
+        }
+
+        function toggleEditLimit() {
+            const role = document.getElementById('editRole').value;
+            document.getElementById('editLimitGroup').style.display = role === 'admin' ? 'none' : 'block';
+        }
+
+        // Загрузка пользователей
+        async function loadUsers() {
+            try {
+                const response = await fetch('/admin/users');
+                const data = await response.json();
+                allUsers = data.users;
+                
+                updateStats(data.users);
+                filterUsers();
+                
+            } catch (error) {
+                showAlert('❌ Ошибка загрузки пользователей: ' + error.message, 'error');
+            }
+        }
+
+        // Обновление статистики
+        function updateStats(users) {
+            let activeCount = 0, blockedCount = 0, adminCount = 0;
+            let totalGenerations = 0, totalLimits = 0;
+            
+            users.forEach(user => {
+                if (user.status === 'active') activeCount++;
+                if (user.status === 'blocked') blockedCount++;
+                if (user.role === 'admin') adminCount++;
+                totalGenerations += user.currentUsage || 0;
+                if (user.monthlyLimit > 0) totalLimits += user.monthlyLimit;
+            });
+            
+            document.getElementById('totalUsers').textContent = users.length;
+            document.getElementById('activeUsers').textContent = activeCount;
+            document.getElementById('blockedUsers').textContent = blockedCount;
+            document.getElementById('adminUsers').textContent = adminCount;
+            document.getElementById('totalGenerations').textContent = totalGenerations;
+            document.getElementById('totalLimits').textContent = totalLimits;
+        }
+
+        // Фильтрация пользователей
+        function filterUsers() {
+            const roleFilter = document.getElementById('filterRole').value;
+            const statusFilter = document.getElementById('filterStatus').value;
+            const searchFilter = document.getElementById('searchUser').value.toLowerCase();
+            
+            const filteredUsers = allUsers.filter(user => {
+                if (roleFilter && user.role !== roleFilter) return false;
+                if (statusFilter && user.status !== statusFilter) return false;
+                if (searchFilter && !user.email.toLowerCase().includes(searchFilter)) return false;
+                return true;
+            });
+            
+            displayUsers(filteredUsers);
+        }
+
+        // Отображение пользователей
+        function displayUsers(users) {
+            const usersList = document.getElementById('usersList');
+            usersList.innerHTML = '';
+            
+            if (users.length === 0) {
+                usersList.innerHTML = '<p style="text-align: center; color: #718096; padding: 40px;">Пользователи не найдены</p>';
+                return;
+            }
+            
+            users.forEach(user => {
+                const progressPercent = user.monthlyLimit > 0 ? (user.currentUsage / user.monthlyLimit) * 100 : 0;
+                const isAdmin = user.role === 'admin';
+                const isBlocked = user.status === 'blocked';
+                
+                const userDiv = document.createElement('div');
+                userDiv.className = `user-card ${isBlocked ? 'blocked' : ''} ${isAdmin ? 'admin' : ''}`;
+                userDiv.innerHTML = `
+                    <div class="user-header">
+                        <div class="user-info">
+                            <div>
+                                <span class="user-email">📧 ${user.email}</span>
+                                <span class="user-role role-${user.role}">${user.role === 'admin' ? '👑 Администратор' : '👤 Пользователь'}</span>
+                            </div>
+                            <div style="margin-top: 5px;">
+                                <span class="user-status status-${user.status}">${user.status === 'active' ? '✅ Активен' : '🔒 Заблокирован'}</span>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div class="user-details">
+                        <div class="detail-group">
+                            <div class="detail-label">🔑 API ключ</div>
+                            <div class="detail-value">${user.apiKey.substring(0, 20)}...</div>
+                        </div>
+                        
+                        <div class="detail-group">
+                            <div class="detail-label">📊 Использование</div>
+                            <div class="detail-value">
+                                ${isAdmin ? '♾️ Безлимит' : `${user.currentUsage} / ${user.monthlyLimit}`}
+                            </div>
+                            ${!isAdmin ? `
+                                <div class="progress-bar">
+                                    <div class="progress-fill" style="width: ${progressPercent}%"></div>
+                                </div>
+                                <small>Осталось: ${user.monthlyLimit - user.currentUsage}</small>
+                            ` : ''}
+                        </div>
+                        
+                        <div class="detail-group">
+                            <div class="detail-label">📅 Создан</div>
+                            <div class="detail-value">${new Date(user.createdAt).toLocaleString('ru-RU')}</div>
+                        </div>
+                    </div>
+                    
+                    <div class="user-actions">
+                        <button onclick="showUserDetails('${user.apiKey}')" class="btn btn-primary btn-sm">🔍 Подробности</button>
+                        <button onclick="editUser('${user.apiKey}')" class="btn btn-warning btn-sm">✏️ Редактировать</button>
+                        <button onclick="toggleBlock('${user.apiKey}')" class="btn ${user.status === 'active' ? 'btn-danger' : 'btn-success'} btn-sm">
+                            ${user.status === 'active' ? '🔒 Заблокировать' : '🔓 Разблокировать'}
+                        </button>
+                        ${!isAdmin ? `<button onclick="resetLimits('${user.apiKey}')" class="btn btn-success btn-sm">🔄 Сбросить лимиты</button>` : ''}
+                        <button onclick="deleteUser('${user.apiKey}')" class="btn btn-danger btn-sm">🗑️ Удалить</button>
+                    </div>
+                `;
+                usersList.appendChild(userDiv);
+            });
+        }
+
+        // Показать детали пользователя
+        async function showUserDetails(apiKey) {
+            try {
+                const response = await fetch(`/admin/users/${apiKey}`);
+                const user = await response.json();
+                
+                const historyHtml = user.history && user.history.length > 0 
+                    ? user.history.map(item => `
+                        <div class="history-item">
+                            <div class="history-header">
+                                <strong>${item.prompt}</strong>
+                                <span class="history-time">${new Date(item.timestamp).toLocaleString('ru-RU')}</span>
+                            </div>
+                            <a href="${item.imageUrl}" target="_blank" class="btn btn-primary btn-sm">🖼️ Посмотреть</a>
+                        </div>
+                    `).join('')
+                    : '<p>Нет истории генераций</p>';
+                
+                document.getElementById('modalContent').innerHTML = `
+                    <h2>👤 Детали пользователя</h2>
+                    
+                    <div class="detail-group">
+                        <div class="detail-label">📧 Email</div>
+                        <div class="detail-value">${user.userEmail}</div>
+                    </div>
+                    
+                    <div class="detail-group">
+                        <div class="detail-label">👤 Роль</div>
+                        <div class="detail-value">${user.role === 'admin' ? '👑 Администратор' : '👤 Пользователь'}</div>
+                    </div>
+                    
+                    <div class="detail-group">
+                        <div class="detail-label">⚡ Статус</div>
+                        <div class="detail-value">${user.status === 'active' ? '✅ Активен' : '🔒 Заблокирован'}</div>
+                    </div>
+                    
+                    <div class="detail-group">
+                        <div class="detail-label">🔑 API ключ</div>
+                        <div class="detail-value">${user.apiKey}</div>
+                        <button onclick="copyToClipboard('${user.apiKey}')" class="btn btn-success btn-sm" style="margin-top: 10px;">📋 Копировать</button>
+                    </div>
+                    
+                    <h3 style="margin: 30px 0 15px 0;">🔧 Discord настройки</h3>
+                    
+                    <div class="detail-group">
+                        <div class="detail-label">🏠 Server ID</div>
+                        <div class="detail-value">${user.serverId}</div>
+                    </div>
+                    
+                    <div class="detail-group">
+                        <div class="detail-label">💬 Channel ID</div>
+                        <div class="detail-value">${user.channelId}</div>
+                    </div>
+                    
+                    <div class="detail-group">
+                        <div class="detail-label">🔐 User Token</div>
+                        <div class="detail-value">${user.salaiToken.substring(0, 30)}...</div>
+                    </div>
+                    
+                    <h3 style="margin: 30px 0 15px 0;">📊 Статистика</h3>
+                    
+                    <div class="detail-group">
+                        <div class="detail-label">Использовано генераций</div>
+                        <div class="detail-value">${user.currentUsage || 0}</div>
+                    </div>
+                    
+                    <div class="detail-group">
+                        <div class="detail-label">Месячный лимит</div>
+                        <div class="detail-value">${user.monthlyLimit === -1 ? '♾️ Безлимит' : user.monthlyLimit}</div>
+                    </div>
+                    
+                    <div class="detail-group">
+                        <div class="detail-label">Дата сброса</div>
+                        <div class="detail-value">${user.resetDate ? new Date(user.resetDate).toLocaleDateString('ru-RU') : 'Н/Д'}</div>
+                    </div>
+                    
+                    <h3 style="margin: 30px 0 15px 0;">📜 Последние генерации</h3>
+                    ${historyHtml}
+                `;
+                
+                document.getElementById('userModal').style.display = 'block';
+                
+            } catch (error) {
+                showAlert('❌ Ошибка загрузки деталей: ' + error.message, 'error');
+            }
+        }
+
+        // Редактирование пользователя
+        async function editUser(apiKey) {
+            const user = allUsers.find(u => u.apiKey === apiKey);
+            if (!user) return;
+            
+            document.getElementById('editApiKey').value = apiKey;
+            document.getElementById('editEmail').value = user.email;
+            document.getElementById('editRole').value = user.role || 'user';
+            document.getElementById('editLimit').value = user.monthlyLimit;
+            
+            toggleEditLimit();
+            document.getElementById('editModal').style.display = 'block';
+        }
+
+        // Сохранение изменений
+        document.getElementById('editForm').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            
+            const apiKey = document.getElementById('editApiKey').value;
+            const updates = {
+                userEmail: document.getElementById('editEmail').value,
+                role: document.getElementById('editRole').value,
+                monthlyLimit: document.getElementById('editRole').value === 'admin' 
+                    ? -1 
+                    : parseInt(document.getElementById('editLimit').value)
+            };
+            
+            try {
+                const response = await fetch(`/admin/users/${apiKey}`, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(updates)
+                });
+                
+                const result = await response.json();
+                
+                if (result.success) {
+                    showAlert('✅ Пользователь обновлен!', 'success');
+                    closeEditModal();
+                    loadUsers();
+                } else {
+                    showAlert('❌ Ошибка: ' + result.error, 'error');
+                }
+            } catch (error) {
+                showAlert('❌ Ошибка: ' + error.message, 'error');
+            }
+        });
+
+        // Блокировка/разблокировка
+        async function toggleBlock(apiKey) {
+            try {
+                const response = await fetch(`/admin/users/${apiKey}/toggle-block`, { method: 'POST' });
+                const result = await response.json();
+                
+                if (result.success) {
+                    showAlert(`✅ Пользователь ${result.status === 'blocked' ? 'заблокирован' : 'разблокирован'}!`, 'success');
+                    loadUsers();
+                }
+            } catch (error) {
+                showAlert('❌ Ошибка: ' + error.message, 'error');
+            }
+        }
+
+        // Сброс лимитов
+        async function resetLimits(apiKey) {
+            if (!confirm('Сбросить счетчик использования до 0?')) return;
+            
+            try {
+                const response = await fetch(`/admin/users/${apiKey}/reset`, { method: 'POST' });
+                const result = await response.json();
+                
+                if (result.success) {
+                    showAlert('✅ Лимиты сброшены!', 'success');
+                    loadUsers();
+                }
+            } catch (error) {
+                showAlert('❌ Ошибка: ' + error.message, 'error');
+            }
+        }
+
+        // Удаление пользователя
+        async function deleteUser(apiKey) {
+            if (!confirm('Вы уверены что хотите удалить этого пользователя? Это действие необратимо!')) return;
+            
+            try {
+                const response = await fetch(`/admin/users/${apiKey}`, { method: 'DELETE' });
+                const result = await response.json();
+                
+                if (result.success) {
+                    showAlert('✅ Пользователь удален!', 'success');
+                    loadUsers();
+                }
+            } catch (error) {
+                showAlert('❌ Ошибка: ' + error.message, 'error');
+            }
+        }
+
+        // Создание пользователя
+        document.getElementById('createUserForm').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            
+            const role = document.getElementById('userRole').value;
+            const userData = {
+                userEmail: document.getElementById('userEmail').value,
+                serverId: document.getElementById('serverId').value,
+                channelId: document.getElementById('channelId').value,
+                salaiToken: document.getElementById('salaiToken').value,
+                monthlyLimit: role === 'admin' ? -1 : parseInt(document.getElementById('monthlyLimit').value),
+                role: role
+            };
+            
+            try {
+                const response = await fetch('/admin/users', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(userData)
+                });
+                
+                const result = await response.json();
+                
+                if (result.success) {
+                    showAlert(`✅ ${role === 'admin' ? 'Администратор' : 'Пользователь'} создан!<br>🔑 API ключ: <strong>${result.apiKey}</strong>`, 'success');
+                    document.getElementById('createUserForm').reset();
+                    loadUsers();
+                    copyToClipboard(result.apiKey);
+                } else {
+                    showAlert('❌ Ошибка: ' + result.error, 'error');
+                }
+            } catch (error) {
+                showAlert('❌ Ошибка: ' + error.message, 'error');
+            }
+        });
+
+        // Загрузка истории
+        async function loadHistory() {
+            try {
+                const response = await fetch('/admin/history');
+                const data = await response.json();
+                
+                const historyList = document.getElementById('historyList');
+                
+                if (data.history.length === 0) {
+                    historyList.innerHTML = '<p style="text-align: center; color: #718096; padding: 40px;">История пуста</p>';
+                    return;
+                }
+                
+                historyList.innerHTML = data.history.map(item => `
+                    <div class="history-item">
+                        <div class="history-header">
+                            <div>
+                                <strong>📧 ${item.userEmail}</strong>
+                                <span style="color: #718096; margin-left: 10px;">API: ${item.apiKey}</span>
+                            </div>
+                            <span class="history-time">${new Date(item.timestamp).toLocaleString('ru-RU')}</span>
+                        </div>
+                        <div style="margin: 10px 0;">
+                            <strong>Промпт:</strong> ${item.prompt}
+                        </div>
+                        <a href="${item.imageUrl}" target="_blank" class="btn btn-primary btn-sm">🖼️ Посмотреть изображение</a>
+                    </div>
+                `).join('');
+                
+            } catch (error) {
+                showAlert('❌ Ошибка загрузки истории: ' + error.message, 'error');
+            }
+        }
+
+        // Утилиты
+        function copyToClipboard(text) {
+            navigator.clipboard.writeText(text).then(() => {
+                showAlert('✅ Скопировано в буфер обмена!', 'success');
+            });
+        }
+
+        function closeModal() {
+            document.getElementById('userModal').style.display = 'none';
+        }
+
+        function closeEditModal() {
+            document.getElementById('editModal').style.display = 'none';
+        }
+
+        function showAlert(message, type) {
+            const alertDiv = document.createElement('div');
+            alertDiv.className = `alert alert-${type}`;
+            alertDiv.innerHTML = message;
+            
+            document.getElementById('createResult').innerHTML = '';
+            document.getElementById('createResult').appendChild(alertDiv);
+            
+            setTimeout(() => alertDiv.remove(), 5000);
+        }
+
+        // Закрытие модальных окон по клику вне
+        window.onclick = function(event) {
+            if (event.target.classList.contains('modal')) {
+                event.target.style.display = 'none';
+            }
+        }
+
+        // Загрузка при старте
+        loadUsers();
+        
+        // Автообновление каждые 30 секунд
+        setInterval(loadUsers, 30000);
+    </script>
+</body>
+</html>
