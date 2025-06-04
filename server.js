@@ -423,28 +423,113 @@ app.post('/api/generate', validateApiKey, async (req, res) => {
   }
 });
 
-// USER: Проверка статуса пользователя
-app.get('/api/status', validateApiKey, (req, res) => {
-  const { user, apiKey } = req;
-  const usage = userUsage.get(apiKey) || { count: 0 };
-  
-  res.json({
-    user: {
-      email: user.userEmail,
-      status: user.status,
-      role: user.role || 'user',
-      createdAt: user.createdAt
-    },
-    usage: user.role === 'admin' ? {
-      unlimited: true,
-      role: 'admin'
-    } : {
-      used: usage.count,
-      limit: user.monthlyLimit,
-      remaining: user.monthlyLimit - usage.count,
-      resetDate: usage.resetDate
+// USER: Upscale изображения (ФИНАЛЬНАЯ ВЕРСИЯ!)
+app.post('/api/upscale', validateApiKey, async (req, res) => {
+  try {
+    const { task_id, index } = req.body;
+    const { user, apiKey } = req;
+    
+    if (!task_id || !index) {
+      return res.status(400).json({
+        error: 'Параметры task_id и index обязательны',
+        example: { 
+          task_id: "1379740446099771424", 
+          index: 1,
+          note: "index должен быть от 1 до 4"
+        }
+      });
     }
-  });
+    
+    // Проверяем что index от 1 до 4
+    if (index < 1 || index > 4) {
+      return res.status(400).json({
+        error: 'Параметр index должен быть от 1 до 4',
+        detail: '1 - верхняя левая, 2 - верхняя правая, 3 - нижняя левая, 4 - нижняя правая'
+      });
+    }
+    
+    console.log(`🔍 Upscale для ${user.userEmail}: задача ${task_id}, картинка ${index}`);
+    
+    // Получаем историю для извлечения URL
+    const history = generationHistory.get(apiKey) || [];
+    const originalTask = history.find(item => item.taskId === task_id);
+    
+    if (!originalTask || !originalTask.imageUrl) {
+      return res.status(404).json({
+        error: 'Задача не найдена. Сначала сгенерируйте изображение.'
+      });
+    }
+    
+    // Извлекаем hash из URL изображения
+    // URL выглядит так: .../khag_ag_beautiful_mountain_landscape_b869389c-34a0-4f26-ad21-db25573310f2.png
+    const urlParts = originalTask.imageUrl.split('/');
+    const filename = urlParts[urlParts.length - 1];
+    const hashMatch = filename.match(/([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})/);
+    const hash = hashMatch ? hashMatch[1] : task_id;
+    
+    console.log(`📌 Извлечен hash: ${hash}`);
+    
+    // Получаем или создаем Midjourney клиент
+    let client = userSessions.get(apiKey);
+    if (!client) {
+      client = await getMidjourneyClient(user);
+      userSessions.set(apiKey, client);
+    }
+    
+    // Используем правильный метод Upscale с hash
+    const result = await client.Upscale({
+      index: index,
+      msgId: task_id,
+      hash: hash,
+      flags: 0,
+      loading: (uri, progress) => {
+        console.log(`${user.userEmail} - Upscale прогресс: ${progress}%`);
+      }
+    });
+    
+    console.log(`✅ Upscale завершен для ${user.userEmail}`);
+    
+    // Сохраняем в историю
+    const historyItem = {
+      action: 'upscale',
+      originalTaskId: task_id,
+      selectedIndex: index,
+      imageUrl: result.uri,
+      timestamp: new Date().toISOString()
+    };
+    
+    history.push(historyItem);
+    generationHistory.set(apiKey, history);
+    
+    res.json({
+      success: true,
+      image_url: result.uri,
+      original_task_id: task_id,
+      selected_index: index,
+      description: `Картинка ${index} увеличена`,
+      timestamp: new Date().toISOString()
+    });
+    
+  } catch (error) {
+    console.error('❌ Ошибка upscale:', error);
+    console.error('Детали:', error.message);
+    
+    // Если upscale не работает, возвращаем информацию для внешней обработки
+    res.json({
+      success: false,
+      error: error.message,
+      fallback: true,
+      message: "Используйте альтернативный метод обработки",
+      grid_url: originalTask?.imageUrl || null,
+      selected_index: index,
+      position: {
+        1: { x: 0, y: 0, name: "Верхняя левая" },
+        2: { x: 512, y: 0, name: "Верхняя правая" },
+        3: { x: 0, y: 512, name: "Нижняя левая" },
+        4: { x: 512, y: 512, name: "Нижняя правая" }
+      }[index]
+    });
+  }
 });
 
 // Админ панель (HTML интерфейс)
@@ -462,6 +547,7 @@ app.get('/', (req, res) => {
       admin: '/admin',
       api: {
         generate: 'POST /api/generate',
+        upscale: 'POST /api/upscale',  // НОВЫЙ ENDPOINT!
         status: 'GET /api/status'
       }
     }
@@ -477,6 +563,7 @@ init().then(() => {
     console.log(`📊 Health check: http://localhost:${PORT}/health`);
     console.log(`👥 Admin панель: http://localhost:${PORT}/admin`);
     console.log(`🎨 API генерации: POST http://localhost:${PORT}/api/generate`);
+    console.log(`🔍 API upscale: POST http://localhost:${PORT}/api/upscale`);
     console.log(`🌍 Среда: ${process.env.NODE_ENV || 'development'}`);
   });
 });
