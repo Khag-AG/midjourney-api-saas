@@ -1,58 +1,32 @@
 {
-  "name": "midjourney",
-  "version": "4.0.0",
-  "description": "Node.js client for the unofficial MidJourney API.",
-  "main": "libs/index.js",
-  "types": "libs/index.d.ts",
-  "source": "./src/index.ts",
+  "name": "midjourney-api-saas",
+  "version": "1.0.0",
+  "description": "Multi-user Midjourney API service with admin panel for Make.com integration",
+  "main": "server.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1",
-    "build": "tsc",
-    "prettier": "prettier --write .",
-    "prettier:check": "prettier --check .",
-    "example:imagine": "tsx ./examples/imagine-ws.ts"
+    "start": "node server.js",
+    "dev": "node server.js",
+    "test": "echo \"Error: no test specified\" && exit 1"
   },
-  "files": [
-    "libs/*",
-    "src/*",
-    "*.md"
-  ],
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/erictik/midjourney-client.git"
+    "url": "git+https://github.com/Khag-AG/midjourney-api-saas.git"
   },
   "keywords": [
-    "midjourney-client",
-    "midjourney"
+    "midjourney",
+    "api",
+    "saas",
+    "make.com",
+    "automation"
   ],
   "engines": {
     "node": ">=18"
   },
-  "author": "Eric Yang <yanghao@10d.xin>",
-  "license": "ISC",
-  "bugs": {
-    "url": "https://github.com/erictik/midjourney-client/issues"
-  },
-  "homepage": "https://github.com/erictik/midjourney-client#readme",
-  "devDependencies": {
-    "@types/async": "^3.2.20",
-    "@types/node": "^18.16.0",
-    "@types/ws": "^8.5.4",
-    "dotenv": "^16.5.0",
-    "prettier": "^2.8.8",
-    "ts-node": "^10.9.1",
-    "tsx": "^3.12.6",
-    "typescript": "^5.0.4"
-  },
+  "author": "Khar_AG",
+  "license": "Private",
   "dependencies": {
-    "@huggingface/inference": "^2.5.0",
-    "async": "^3.2.4",
-    "express": "^5.1.0",
-    "isomorphic-ws": "^5.0.0",
+    "express": "^4.18.2",
     "midjourney": "^4.3.18",
-    "semiver": "^1.1.0",
-    "snowyflake": "^2.0.0",
-    "tslib": "^2.5.0",
-    "ws": "^8.13.0"
+    "dotenv": "^16.5.0"
   }
 }
