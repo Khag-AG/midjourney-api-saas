@@ -3,7 +3,6 @@ const express = require('express');
 const { Midjourney } = require('midjourney');
 const fs = require('fs').promises;
 const path = require('path');
-const fetch = require('node-fetch');
 require('dotenv').config();
 
 const app = express();
