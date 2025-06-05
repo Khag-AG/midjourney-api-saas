@@ -3,6 +3,7 @@ const express = require('express');
 const { Midjourney } = require('midjourney');
 const fs = require('fs').promises;
 const path = require('path');
+const fetch = require('node-fetch');
 require('dotenv').config();
 
 const app = express();
@@ -499,7 +500,6 @@ app.post('/api/upscale', validateApiKey, async (req, res) => {
       
       try {
         // Загружаем изображение
-        const fetch = require('node-fetch');
         const imageResponse = await fetch(result.uri);
         
         if (!imageResponse.ok) {
