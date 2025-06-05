@@ -1,4 +1,4 @@
-// server.js - Супер продвинутая версия с полным функционалом
+// server.js - Супер продвинутая версия с асинхронной генерацией
 const express = require('express');
 const { Midjourney } = require('midjourney');
 const fs = require('fs').promises;
@@ -6,6 +6,8 @@ const path = require('path');
 require('dotenv').config();
 
 const app = express();
+const activeTasks = new Map(); // Хранилище активных задач
+
 app.use(express.json());
 app.use(express.static('public'));
 
@@ -157,7 +159,8 @@ app.get('/health', (req, res) => {
       activeUsers,
       blockedUsers,
       adminUsers,
-      activeSessions: userSessions.size
+      activeSessions: userSessions.size,
+      activeTasks: activeTasks.size  // Добавлено!
     },
     timestamp: new Date().toISOString(),
     environment: process.env.NODE_ENV || 'development'
@@ -180,9 +183,9 @@ app.post('/admin/users', async (req, res) => {
     serverId,
     channelId,
     salaiToken,
-    monthlyLimit: role === 'admin' ? -1 : monthlyLimit, // -1 означает безлимит
+    monthlyLimit: role === 'admin' ? -1 : monthlyLimit,
     userEmail,
-    role, // 'admin' или 'user'
+    role,
     createdAt: new Date().toISOString(),
     status: 'active'
   };
@@ -219,7 +222,7 @@ app.get('/admin/users', (req, res) => {
       createdAt: user.createdAt,
       serverId: user.serverId,
       channelId: user.channelId,
-      salaiToken: "***hidden***" // Скрыто для безопасности
+      salaiToken: "***hidden***"
     };
   });
   
@@ -242,7 +245,7 @@ app.get('/admin/users/:apiKey', (req, res) => {
     ...user,
     currentUsage: usage.count,
     resetDate: usage.resetDate,
-    history: history.slice(-10) // Последние 10 генераций
+    history: history.slice(-10)
   });
 });
 
@@ -256,7 +259,6 @@ app.put('/admin/users/:apiKey', (req, res) => {
     return res.status(404).json({ error: 'Пользователь не найден' });
   }
   
-  // Обновляем только разрешенные поля
   const allowedFields = ['monthlyLimit', 'status', 'role', 'userEmail'];
   const updatedUser = { ...user };
   
@@ -266,7 +268,6 @@ app.put('/admin/users/:apiKey', (req, res) => {
     }
   });
   
-  // Если меняем роль на админа, убираем лимиты
   if (updatedUser.role === 'admin') {
     updatedUser.monthlyLimit = -1;
   }
@@ -344,13 +345,12 @@ app.get('/admin/history', (req, res) => {
     });
   });
   
-  // Сортируем по дате (новые первыми)
   allHistory.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
   
-  res.json({ history: allHistory.slice(0, 100) }); // Последние 100 генераций
+  res.json({ history: allHistory.slice(0, 100) });
 });
 
-// USER: Генерация изображения
+// USER: Генерация изображения (АСИНХРОННАЯ ВЕРСИЯ)
 app.post('/api/generate', validateApiKey, async (req, res) => {
   try {
     const { prompt } = req.body;
@@ -363,64 +363,160 @@ app.post('/api/generate', validateApiKey, async (req, res) => {
       });
     }
     
-    console.log(`🎨 Генерация для ${user.userEmail} (${user.role}): "${prompt}"`);
+    // Генерируем уникальный task_id
+    const taskId = 'task_' + Date.now() + '_' + Math.random().toString(36).substring(7);
     
-    // Получаем или создаем Midjourney клиент
-    let client = userSessions.get(apiKey);
-    if (!client) {
-      client = await getMidjourneyClient(user);
-      userSessions.set(apiKey, client);
-    }
+    console.log(`🎨 Запуск генерации для ${user.userEmail}: "${prompt}" (Task: ${taskId})`);
     
-    // Генерируем изображение
-    const result = await client.Imagine(prompt, (uri, progress) => {
-      console.log(`${user.userEmail} - Прогресс: ${progress}`);
+    // Сохраняем начальный статус
+    activeTasks.set(taskId, {
+      status: 'processing',
+      prompt: prompt,
+      user: user.userEmail,
+      apiKey: apiKey,  // Добавлено для проверки прав доступа
+      startedAt: new Date().toISOString()
     });
     
-    // Увеличиваем счетчик использования (только для обычных пользователей)
-    let currentUsage = userUsage.get(apiKey) || { count: 0, resetDate: new Date() };
-    if (user.role !== 'admin') {
-      currentUsage.count += 1;
-      userUsage.set(apiKey, currentUsage);
-    }
-    
-    // Сохраняем в историю
-    const historyItem = {
-      prompt,
-      imageUrl: result.uri,
-      taskId: result.id,
-      timestamp: new Date().toISOString()
-    };
-    
-    const history = generationHistory.get(apiKey) || [];
-    history.push(historyItem);
-    generationHistory.set(apiKey, history);
-    
-    console.log(`✅ Генерация завершена для ${user.userEmail} (${user.role === 'admin' ? 'безлимит' : `${currentUsage.count}/${user.monthlyLimit}`})`);
-    
+    // Сразу возвращаем task_id
     res.json({
       success: true,
-      task_id: result.id,
-      prompt: prompt,
-      image_url: result.uri,
-      usage: user.role === 'admin' ? {
-        unlimited: true,
-        role: 'admin'
-      } : {
-        used: currentUsage.count,
-        limit: user.monthlyLimit,
-        remaining: user.monthlyLimit - currentUsage.count
-      },
-      timestamp: new Date().toISOString()
+      task_id: taskId,
+      status: 'processing',
+      message: 'Генерация запущена'
     });
     
+    // Запускаем генерацию в фоне
+    (async () => {
+      try {
+        let client = userSessions.get(apiKey);
+        if (!client) {
+          client = await getMidjourneyClient(user);
+          userSessions.set(apiKey, client);
+        }
+        
+        const result = await client.Imagine(prompt, (uri, progress) => {
+          console.log(`${user.userEmail} - Прогресс: ${progress}`);
+          const task = activeTasks.get(taskId);
+          if (task) {
+            task.progress = progress;
+            activeTasks.set(taskId, task);
+          }
+        });
+        
+        // Обновляем статус на completed
+        activeTasks.set(taskId, {
+          status: 'completed',
+          prompt: prompt,
+          image_url: result.uri,
+          midjourney_id: result.id,
+          user: user.userEmail,
+          apiKey: apiKey,
+          completedAt: new Date().toISOString()
+        });
+        
+        // Обновляем счетчики и историю
+        let currentUsage = userUsage.get(apiKey) || { count: 0, resetDate: new Date() };
+        if (user.role !== 'admin') {
+          currentUsage.count += 1;
+          userUsage.set(apiKey, currentUsage);
+        }
+        
+        const historyItem = {
+          prompt,
+          imageUrl: result.uri,
+          taskId: result.id,
+          timestamp: new Date().toISOString()
+        };
+        
+        const history = generationHistory.get(apiKey) || [];
+        history.push(historyItem);
+        generationHistory.set(apiKey, history);
+        
+        console.log(`✅ Генерация завершена: ${taskId} -> ${result.id}`);
+        
+      } catch (error) {
+        console.error(`❌ Ошибка генерации для ${taskId}:`, error.message);
+        activeTasks.set(taskId, {
+          status: 'failed',
+          error: error.message,
+          prompt: prompt,
+          user: user.userEmail,
+          apiKey: apiKey,
+          failedAt: new Date().toISOString()
+        });
+      }
+    })();
+    
   } catch (error) {
-    console.error('❌ Ошибка генерации:', error.message);
+    console.error('❌ Ошибка запуска генерации:', error.message);
     res.status(500).json({
       success: false,
       error: error.message
     });
   }
+});
+
+// USER: Проверка статуса генерации (НОВЫЙ ENDPOINT!)
+app.get('/api/task/:taskId', validateApiKey, (req, res) => {
+  const { taskId } = req.params;
+  const task = activeTasks.get(taskId);
+  
+  if (!task) {
+    return res.status(404).json({
+      error: 'Задача не найдена',
+      task_id: taskId
+    });
+  }
+  
+  // Проверяем что это задача текущего пользователя
+  if (task.apiKey !== req.apiKey && req.user.role !== 'admin') {
+    return res.status(403).json({
+      error: 'Доступ запрещен'
+    });
+  }
+  
+  const response = {
+    task_id: taskId,
+    status: task.status,
+    prompt: task.prompt
+  };
+  
+  if (task.status === 'completed') {
+    response.image_url = task.image_url;
+    response.midjourney_id = task.midjourney_id;
+    response.task_id = task.midjourney_id;  // Для совместимости с upscale
+    
+    // Удаляем выполненную задачу через 5 минут
+    setTimeout(() => {
+      activeTasks.delete(taskId);
+    }, 300000);
+  } else if (task.status === 'failed') {
+    response.error = task.error;
+  } else if (task.progress !== undefined) {
+    response.progress = task.progress;
+  }
+  
+  res.json(response);
+});
+
+// ADMIN: Список всех активных задач (НОВЫЙ ENDPOINT!)
+app.get('/api/tasks', validateApiKey, (req, res) => {
+  if (req.user.role !== 'admin') {
+    return res.status(403).json({ error: 'Только для администраторов' });
+  }
+  
+  const tasks = Array.from(activeTasks.entries()).map(([id, task]) => ({
+    task_id: id,
+    status: task.status,
+    user: task.user,
+    prompt: task.prompt,
+    progress: task.progress,
+    startedAt: task.startedAt,
+    completedAt: task.completedAt,
+    error: task.error
+  }));
+  
+  res.json({ tasks, total: tasks.length });
 });
 
 // USER: Upscale изображения с поддержкой бинарного вывода
@@ -440,7 +536,6 @@ app.post('/api/upscale', validateApiKey, async (req, res) => {
       });
     }
     
-    // Проверяем что index от 1 до 4
     if (index < 1 || index > 4) {
       return res.status(400).json({
         error: 'Параметр index должен быть от 1 до 4',
@@ -450,7 +545,6 @@ app.post('/api/upscale', validateApiKey, async (req, res) => {
     
     console.log(`🔍 Upscale для ${user.userEmail}: задача ${task_id}, картинка ${index}`);
     
-    // Получаем историю для извлечения URL
     const history = generationHistory.get(apiKey) || [];
     const originalTask = history.find(item => item.taskId === task_id);
     
@@ -460,7 +554,6 @@ app.post('/api/upscale', validateApiKey, async (req, res) => {
       });
     }
     
-    // Извлекаем hash из URL изображения
     const urlParts = originalTask.imageUrl.split('/');
     const filename = urlParts[urlParts.length - 1];
     const hashMatch = filename.match(/([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})/);
@@ -468,14 +561,12 @@ app.post('/api/upscale', validateApiKey, async (req, res) => {
     
     console.log(`📌 Извлечен hash: ${hash}`);
     
-    // Получаем или создаем Midjourney клиент
     let client = userSessions.get(apiKey);
     if (!client) {
       client = await getMidjourneyClient(user);
       userSessions.set(apiKey, client);
     }
     
-    // Используем правильный метод Upscale с hash
     const result = await client.Upscale({
       index: index,
       msgId: task_id,
@@ -488,88 +579,75 @@ app.post('/api/upscale', validateApiKey, async (req, res) => {
     
     console.log(`✅ Upscale завершен для ${user.userEmail}`);
     
-    // ПРОВЕРЯЕМ: нужен ли бинарный режим для Make.com?
     const needBinary = req.headers['x-make-binary'] === 'true' || 
                       req.query.binary === 'true' ||
                       req.headers['accept'] === 'application/octet-stream';
     
-    // Найдите в функции upscale блок с бинарным режимом и замените его:
-
-if (needBinary) {
-  // БИНАРНЫЙ РЕЖИМ для Make.com/Telegram
-  console.log(`📥 Бинарный режим активирован`);
-  
-  try {
-    // Используем встроенный https модуль вместо fetch
-    const https = require('https');
-    const url = require('url');
-    
-    // Парсим URL
-    const imageUrl = new URL(result.uri);
-    
-    // Загружаем изображение через https
-    https.get(imageUrl, (imageResponse) => {
-      if (imageResponse.statusCode !== 200) {
-        throw new Error(`HTTP error! status: ${imageResponse.statusCode}`);
-      }
+    if (needBinary) {
+      console.log(`📥 Бинарный режим активирован`);
       
-      const chunks = [];
-      
-      imageResponse.on('data', (chunk) => {
-        chunks.push(chunk);
-      });
-      
-      imageResponse.on('end', () => {
-        const imageBuffer = Buffer.concat(chunks);
+      try {
+        const https = require('https');
+        const url = require('url');
+        const imageUrl = new URL(result.uri);
         
-        console.log(`✅ Загружено изображение: ${imageBuffer.length} байт`);
-        
-        // Устанавливаем заголовки для бинарного ответа
-        res.set({
-          'Content-Type': 'image/png',
-          'Content-Length': imageBuffer.length,
-          'Content-Disposition': `attachment; filename="midjourney_upscaled_${index}_${Date.now()}.png"`,
-          'X-Image-URL': result.uri,
-          'X-Task-ID': task_id,
-          'X-Selected-Index': index.toString()
+        https.get(imageUrl, (imageResponse) => {
+          if (imageResponse.statusCode !== 200) {
+            throw new Error(`HTTP error! status: ${imageResponse.statusCode}`);
+          }
+          
+          const chunks = [];
+          
+          imageResponse.on('data', (chunk) => {
+            chunks.push(chunk);
+          });
+          
+          imageResponse.on('end', () => {
+            const imageBuffer = Buffer.concat(chunks);
+            
+            console.log(`✅ Загружено изображение: ${imageBuffer.length} байт`);
+            
+            res.set({
+              'Content-Type': 'image/png',
+              'Content-Length': imageBuffer.length,
+              'Content-Disposition': `attachment; filename="midjourney_upscaled_${index}_${Date.now()}.png"`,
+              'X-Image-URL': result.uri,
+              'X-Task-ID': task_id,
+              'X-Selected-Index': index.toString()
+            });
+            
+            res.send(imageBuffer);
+          });
+          
+          imageResponse.on('error', (error) => {
+            console.error('⚠️ Ошибка загрузки изображения:', error.message);
+            res.json({
+              success: true,
+              image_url: result.uri,
+              error: 'Не удалось загрузить изображение для бинарной отправки'
+            });
+          });
+        }).on('error', (error) => {
+          console.error('⚠️ Ошибка HTTPS запроса:', error.message);
+          res.json({
+            success: true,
+            image_url: result.uri,
+            error: 'Не удалось загрузить изображение для бинарной отправки'
+          });
         });
         
-        // Отправляем бинарные данные
-        res.send(imageBuffer);
-      });
-      
-      imageResponse.on('error', (error) => {
-        console.error('⚠️ Ошибка загрузки изображения:', error.message);
-        res.json({
+        return;
+        
+      } catch (error) {
+        console.error('⚠️ Ошибка в бинарном режиме:', error.message);
+        return res.json({
           success: true,
           image_url: result.uri,
           error: 'Не удалось загрузить изображение для бинарной отправки'
         });
-      });
-    }).on('error', (error) => {
-      console.error('⚠️ Ошибка HTTPS запроса:', error.message);
-      res.json({
-        success: true,
-        image_url: result.uri,
-        error: 'Не удалось загрузить изображение для бинарной отправки'
-      });
-    });
+      }
+    }
     
-    return; // Важно! Прерываем выполнение функции
-    
-  } catch (error) {
-    console.error('⚠️ Ошибка в бинарном режиме:', error.message);
-    // Если не удалось загрузить, возвращаем JSON
-    return res.json({
-      success: true,
-      image_url: result.uri,
-      error: 'Не удалось загрузить изображение для бинарной отправки'
-    });
-  }
-}
-    
-    // СТАНДАРТНЫЙ JSON РЕЖИМ
-    // Сохраняем в историю
     const historyItem = {
       action: 'upscale',
       originalTaskId: task_id,
@@ -612,15 +690,19 @@ app.get('/admin', (req, res) => {
 app.get('/', (req, res) => {
   res.json({
     name: 'Midjourney API Service',
-    version: '2.0.0',
+    version: '2.1.0',
     endpoints: {
       health: '/health',
       admin: '/admin',
       api: {
-        generate: 'POST /api/generate',
-        upscale: 'POST /api/upscale',  // НОВЫЙ ENDPOINT!
-        status: 'GET /api/status'
+        generate: 'POST /api/generate (async)',
+        status: 'GET /api/task/:taskId',      // НОВЫЙ!
+        tasks: 'GET /api/tasks (admin only)', // НОВЫЙ!
+        upscale: 'POST /api/upscale'
       }
+    },
+    changes: {
+      '2.1.0': 'Добавлена асинхронная генерация с проверкой статуса'
     }
   });
 });
@@ -634,6 +716,7 @@ init().then(() => {
     console.log(`📊 Health check: http://localhost:${PORT}/health`);
     console.log(`👥 Admin панель: http://localhost:${PORT}/admin`);
     console.log(`🎨 API генерации: POST http://localhost:${PORT}/api/generate`);
+    console.log(`📍 API статуса: GET http://localhost:${PORT}/api/task/:taskId`);
     console.log(`🔍 API upscale: POST http://localhost:${PORT}/api/upscale`);
     console.log(`🌍 Среда: ${process.env.NODE_ENV || 'development'}`);
   });
