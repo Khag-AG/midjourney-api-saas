@@ -219,7 +219,7 @@ app.get('/admin/users', (req, res) => {
       createdAt: user.createdAt,
       serverId: user.serverId,
       channelId: user.channelId,
-      salaiToken: user.salaiToken // Для админ панели показываем все
+      salaiToken: "***hidden***" // Скрыто для безопасности
     };
   });
   
@@ -423,7 +423,7 @@ app.post('/api/generate', validateApiKey, async (req, res) => {
   }
 });
 
-// USER: Upscale изображения (ФИНАЛЬНАЯ ВЕРСИЯ!)
+// USER: Upscale изображения с поддержкой бинарного вывода
 app.post('/api/upscale', validateApiKey, async (req, res) => {
   try {
     const { task_id, index } = req.body;
@@ -461,7 +461,6 @@ app.post('/api/upscale', validateApiKey, async (req, res) => {
     }
     
     // Извлекаем hash из URL изображения
-    // URL выглядит так: .../khag_ag_beautiful_mountain_landscape_b869389c-34a0-4f26-ad21-db25573310f2.png
     const urlParts = originalTask.imageUrl.split('/');
     const filename = urlParts[urlParts.length - 1];
     const hashMatch = filename.match(/([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})/);
@@ -489,6 +488,53 @@ app.post('/api/upscale', validateApiKey, async (req, res) => {
     
     console.log(`✅ Upscale завершен для ${user.userEmail}`);
     
+    // ПРОВЕРЯЕМ: нужен ли бинарный режим для Make.com?
+    const needBinary = req.headers['x-make-binary'] === 'true' || 
+                      req.query.binary === 'true' ||
+                      req.headers['accept'] === 'application/octet-stream';
+    
+    if (needBinary) {
+      // БИНАРНЫЙ РЕЖИМ для Make.com/Telegram
+      console.log(`📥 Бинарный режим активирован`);
+      
+      try {
+        // Загружаем изображение
+        const fetch = require('node-fetch');
+        const imageResponse = await fetch(result.uri);
+        
+        if (!imageResponse.ok) {
+          throw new Error(`HTTP error! status: ${imageResponse.status}`);
+        }
+        
+        const imageBuffer = await imageResponse.buffer();
+        
+        console.log(`✅ Загружено изображение: ${imageBuffer.length} байт`);
+        
+        // Устанавливаем заголовки для бинарного ответа
+        res.set({
+          'Content-Type': 'image/png',
+          'Content-Length': imageBuffer.length,
+          'Content-Disposition': `attachment; filename="midjourney_upscaled_${index}_${Date.now()}.png"`,
+          'X-Image-URL': result.uri,
+          'X-Task-ID': task_id,
+          'X-Selected-Index': index.toString()
+        });
+        
+        // Отправляем бинарные данные
+        return res.send(imageBuffer);
+        
+      } catch (error) {
+        console.error('⚠️ Ошибка загрузки изображения:', error.message);
+        // Если не удалось загрузить, возвращаем JSON
+        return res.json({
+          success: true,
+          image_url: result.uri,
+          error: 'Не удалось загрузить изображение для бинарной отправки'
+        });
+      }
+    }
+    
+    // СТАНДАРТНЫЙ JSON РЕЖИМ
     // Сохраняем в историю
     const historyItem = {
       action: 'upscale',
@@ -514,20 +560,11 @@ app.post('/api/upscale', validateApiKey, async (req, res) => {
     console.error('❌ Ошибка upscale:', error);
     console.error('Детали:', error.message);
     
-    // Если upscale не работает, возвращаем информацию для внешней обработки
     res.json({
       success: false,
       error: error.message,
       fallback: true,
-      message: "Используйте альтернативный метод обработки",
-      grid_url: originalTask?.imageUrl || null,
-      selected_index: index,
-      position: {
-        1: { x: 0, y: 0, name: "Верхняя левая" },
-        2: { x: 512, y: 0, name: "Верхняя правая" },
-        3: { x: 0, y: 512, name: "Нижняя левая" },
-        4: { x: 512, y: 512, name: "Нижняя правая" }
-      }[index]
+      message: "Используйте альтернативный метод обработки"
     });
   }
 });
