@@ -493,19 +493,34 @@ app.post('/api/upscale', validateApiKey, async (req, res) => {
                       req.query.binary === 'true' ||
                       req.headers['accept'] === 'application/octet-stream';
     
-    if (needBinary) {
-      // БИНАРНЫЙ РЕЖИМ для Make.com/Telegram
-      console.log(`📥 Бинарный режим активирован`);
+    // Найдите в функции upscale блок с бинарным режимом и замените его:
+
+if (needBinary) {
+  // БИНАРНЫЙ РЕЖИМ для Make.com/Telegram
+  console.log(`📥 Бинарный режим активирован`);
+  
+  try {
+    // Используем встроенный https модуль вместо fetch
+    const https = require('https');
+    const url = require('url');
+    
+    // Парсим URL
+    const imageUrl = new URL(result.uri);
+    
+    // Загружаем изображение через https
+    https.get(imageUrl, (imageResponse) => {
+      if (imageResponse.statusCode !== 200) {
+        throw new Error(`HTTP error! status: ${imageResponse.statusCode}`);
+      }
       
-      try {
-        // Загружаем изображение
-        const imageResponse = await fetch(result.uri);
-        
-        if (!imageResponse.ok) {
-          throw new Error(`HTTP error! status: ${imageResponse.status}`);
-        }
-        
-        const imageBuffer = await imageResponse.buffer();
+      const chunks = [];
+      
+      imageResponse.on('data', (chunk) => {
+        chunks.push(chunk);
+      });
+      
+      imageResponse.on('end', () => {
+        const imageBuffer = Buffer.concat(chunks);
         
         console.log(`✅ Загружено изображение: ${imageBuffer.length} байт`);
         
@@ -520,18 +535,38 @@ app.post('/api/upscale', validateApiKey, async (req, res) => {
         });
         
         // Отправляем бинарные данные
-        return res.send(imageBuffer);
-        
-      } catch (error) {
+        res.send(imageBuffer);
+      });
+      
+      imageResponse.on('error', (error) => {
         console.error('⚠️ Ошибка загрузки изображения:', error.message);
-        // Если не удалось загрузить, возвращаем JSON
-        return res.json({
+        res.json({
           success: true,
           image_url: result.uri,
           error: 'Не удалось загрузить изображение для бинарной отправки'
         });
-      }
-    }
+      });
+    }).on('error', (error) => {
+      console.error('⚠️ Ошибка HTTPS запроса:', error.message);
+      res.json({
+        success: true,
+        image_url: result.uri,
+        error: 'Не удалось загрузить изображение для бинарной отправки'
+      });
+    });
+    
+    return; // Важно! Прерываем выполнение функции
+    
+  } catch (error) {
+    console.error('⚠️ Ошибка в бинарном режиме:', error.message);
+    // Если не удалось загрузить, возвращаем JSON
+    return res.json({
+      success: true,
+      image_url: result.uri,
+      error: 'Не удалось загрузить изображение для бинарной отправки'
+    });
+  }
+}
     
     // СТАНДАРТНЫЙ JSON РЕЖИМ
     // Сохраняем в историю
