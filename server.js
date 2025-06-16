@@ -528,10 +528,168 @@ app.get('/api/tasks', validateApiKey, (req, res) => {
   res.json({ tasks, total: tasks.length });
 });
 
+// Генерация nonce как в Discord
+function generateNonce() {
+  const timestamp = Date.now() - 1420070400000;
+  const workerId = Math.floor(Math.random() * 1024);
+  const processId = Math.floor(Math.random() * 16384);
+  const counter = Math.floor(Math.random() * 4096);
+  
+  return ((timestamp * 524288) + (workerId * 16384) + processId * 4096 + counter).toString();
+}
+
+// Функция ожидания с проверкой результата
+async function waitForUpscaleResult(channelId, salaiToken, originalMessageId, index, maxAttempts = 30) {
+  console.log(`⏳ Ожидаем результат upscale для сообщения ${originalMessageId}, картинка ${index}`);
+  
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    await new Promise(resolve => setTimeout(resolve, 2000)); // Ждем 2 секунды
+    
+    try {
+      // Получаем последние сообщения из канала
+      const response = await fetch(`https://discord.com/api/v9/channels/${channelId}/messages?limit=50`, {
+        headers: {
+          'Authorization': salaiToken,
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        }
+      });
+      
+      if (!response.ok) continue;
+      
+      const messages = await response.json();
+      
+      // Ищем сообщение с upscale результатом
+      for (const msg of messages) {
+        // Проверяем что это сообщение от Midjourney бота
+        if (msg.author.id === '936929561302675456' && 
+            msg.attachments && 
+            msg.attachments.length > 0 &&
+            msg.content) {
+          
+          // Проверяем что это наш upscale по содержимому
+          if (msg.content.includes(`Image #${index}`) || 
+              (msg.reference && msg.reference.message_id === originalMessageId)) {
+            
+            console.log(`✅ Найден результат upscale!`);
+            return {
+              success: true,
+              url: msg.attachments[0].url,
+              proxy_url: msg.attachments[0].proxy_url,
+              message_id: msg.id
+            };
+          }
+        }
+      }
+    } catch (error) {
+      console.error(`Попытка ${attempt + 1}: ${error.message}`);
+    }
+  }
+  
+  return { success: false, error: 'Timeout waiting for upscale result' };
+}
+
+// Собственная реализация upscale через Discord API
+async function customUpscale(messageId, index, hash, user) {
+  console.log('🚀 Используем собственную реализацию upscale');
+  
+  const customId = `MJ::JOB::upsample::${index}::${hash}`;
+  const nonce = generateNonce();
+  
+  const payload = {
+    type: 3, // MESSAGE_COMPONENT
+    nonce: nonce,
+    guild_id: user.serverId,
+    channel_id: user.channelId,
+    message_flags: 0,
+    message_id: messageId,
+    application_id: "936929561302675456", // Midjourney Bot ID
+    session_id: "cb06f61453064c0983f2adae2a88c223", // Фиксированный session_id
+    data: {
+      component_type: 2, // BUTTON
+      custom_id: customId
+    }
+  };
+  
+  console.log('📤 Отправляем запрос на upscale:', {
+    messageId,
+    index,
+    customId,
+    nonce
+  });
+  
+  try {
+    // Отправляем interaction
+    const response = await fetch('https://discord.com/api/v9/interactions', {
+      method: 'POST',
+      headers: {
+        'Authorization': user.salaiToken,
+        'Content-Type': 'application/json',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept': '*/*',
+        'Accept-Language': 'en-US,en;q=0.9',
+        'Origin': 'https://discord.com',
+        'Referer': 'https://discord.com/channels/@me',
+        'Sec-Ch-Ua': '"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"',
+        'Sec-Ch-Ua-Mobile': '?0',
+        'Sec-Ch-Ua-Platform': '"Windows"',
+        'Sec-Fetch-Dest': 'empty',
+        'Sec-Fetch-Mode': 'cors',
+        'Sec-Fetch-Site': 'same-origin',
+        'X-Debug-Options': 'bugReporterEnabled',
+        'X-Discord-Locale': 'en-US',
+        'X-Discord-Timezone': 'Europe/Moscow'
+      },
+      body: JSON.stringify(payload)
+    });
+    
+    const statusCode = response.status;
+    const responseText = await response.text();
+    
+    console.log(`📥 Discord ответ: ${statusCode}`);
+    if (responseText) console.log('Response body:', responseText);
+    
+    if (statusCode === 204) {
+      console.log('✅ Команда upscale принята Discord!');
+      
+      // Ждем результат
+      const result = await waitForUpscaleResult(
+        user.channelId, 
+        user.salaiToken, 
+        messageId, 
+        index
+      );
+      
+      if (result.success) {
+        return {
+          uri: result.url,
+          proxy_url: result.proxy_url,
+          success: true
+        };
+      } else {
+        throw new Error(result.error || 'Failed to get upscale result');
+      }
+      
+    } else if (statusCode === 400) {
+      throw new Error(`Bad Request: ${responseText}`);
+    } else if (statusCode === 401) {
+      throw new Error('Unauthorized: Check your Discord token');
+    } else if (statusCode === 404) {
+      throw new Error('Message not found or button expired');
+    } else {
+      throw new Error(`Discord API error: ${statusCode} - ${responseText}`);
+    }
+    
+  } catch (error) {
+    console.error('❌ Ошибка customUpscale:', error);
+    throw error;
+  }
+}
+
 // USER: Upscale изображения - ПОЛНОСТЬЮ ИСПРАВЛЕННЫЙ!
 app.post('/api/upscale', validateApiKey, async (req, res) => {
   try {
-    const { task_id, index, returnBinary } = req.body; // ИСПРАВЛЕНИЕ: Добавили returnBinary!
+    const { task_id, index } = req.body;
+    const returnBinary = req.body.returnBinary || false;
     const { user, apiKey } = req;
     
     if (!task_id || !index) {
@@ -554,7 +712,7 @@ app.post('/api/upscale', validateApiKey, async (req, res) => {
     
     console.log(`🔍 Upscale для ${user.userEmail}: задача ${task_id}, картинка ${index}, binary: ${returnBinary}`);
     
-    // ВАЖНОЕ ИСПРАВЛЕНИЕ: Сначала проверяем в activeTasks (для новых генераций)
+    // Поиск данных задачи
     let originalTask = null;
     let msgId, hash;
     
@@ -573,14 +731,12 @@ app.post('/api/upscale', validateApiKey, async (req, res) => {
     // Если не нашли в активных, ищем в истории
     if (!originalTask) {
       const history = generationHistory.get(apiKey) || [];
-      // ВАЖНОЕ ИСПРАВЛЕНИЕ: Ищем по внутреннему task_id ИЛИ по Discord ID
       originalTask = history.find(item => 
-        item.internalTaskId === task_id || // Внутренний ID из генерации
-        item.taskId === task_id            // Discord message ID
+        item.internalTaskId === task_id || item.taskId === task_id
       );
       
       if (originalTask) {
-        msgId = originalTask.taskId; // Discord message ID
+        msgId = originalTask.taskId;
         hash = originalTask.hash;
         console.log('📋 Найдено в истории:', { msgId, hash });
       }
@@ -593,7 +749,7 @@ app.post('/api/upscale', validateApiKey, async (req, res) => {
       });
     }
     
-    // Если hash не сохранен, извлекаем из URL (fallback)
+    // Если hash не сохранен, извлекаем из URL
     if (!hash) {
       const urlParts = originalTask.imageUrl.split('/');
       const filename = urlParts[urlParts.length - 1];
@@ -602,51 +758,26 @@ app.post('/api/upscale', validateApiKey, async (req, res) => {
       console.log(`📌 Извлечен hash из URL: ${hash}`);
     }
     
-    // Проверяем что у нас есть msgId
-    if (!msgId) {
+    if (!msgId || !hash) {
       return res.status(400).json({
-        error: 'Не найден Discord message ID для этой задачи',
-        hint: 'Возможно, задача была создана в старой версии API'
+        error: 'Недостаточно данных для upscale',
+        details: { msgId: !!msgId, hash: !!hash }
       });
     }
     
-    let client = userSessions.get(apiKey);
-    if (!client) {
-      client = await getMidjourneyClient(user);
-      userSessions.set(apiKey, client);
-    }
+    // ИСПОЛЬЗУЕМ НАШУ СОБСТВЕННУЮ РЕАЛИЗАЦИЮ!
+    console.log('🔧 Используем customUpscale вместо библиотеки');
     
-    console.log('🚀 Вызываем Upscale с параметрами:', {
-      index: index,
-      msgId: msgId,  // КРИТИЧНО: Используем Discord message ID!
-      hash: hash,
-      flags: 0
-    });
+    const result = await customUpscale(msgId, index, hash, user);
     
-    const result = await client.Upscale({
-      index: index,
-      msgId: msgId, // КРИТИЧНО: Используем Discord message ID, а не task_id!
-      hash: hash,
-      flags: 0,
-      loading: (uri, progress) => {
-        console.log(`${user.userEmail} - Upscale прогресс: ${progress}%`);
-      }
-    });
+    console.log(`✅ Upscale завершен успешно!`);
     
-    console.log(`✅ Upscale завершен для ${user.userEmail}`);
-    
-    // ВАЖНОЕ ИСПРАВЛЕНИЕ: Проверяем returnBinary из тела запроса!
-    const needBinary = returnBinary === true || // Из модуля Make!
-                      req.headers['x-make-binary'] === 'true' || 
-                      req.query.binary === 'true' ||
-                      req.headers['accept'] === 'application/octet-stream';
-    
-    if (needBinary) {
-      console.log(`📥 Бинарный режим активирован (returnBinary: ${returnBinary})`);
+    // Обработка бинарного режима
+    if (returnBinary === true) {
+      console.log(`📥 Бинарный режим активирован`);
       
       try {
         const https = require('https');
-        const url = require('url');
         const imageUrl = new URL(result.uri);
         
         https.get(imageUrl, (imageResponse) => {
@@ -698,11 +829,6 @@ app.post('/api/upscale', validateApiKey, async (req, res) => {
         
       } catch (error) {
         console.error('⚠️ Ошибка в бинарном режиме:', error.message);
-        return res.json({
-          success: true,
-          image_url: result.uri,
-          error: 'Не удалось загрузить изображение для бинарной отправки'
-        });
       }
     }
     
@@ -720,12 +846,13 @@ app.post('/api/upscale', validateApiKey, async (req, res) => {
     history.push(historyItem);
     generationHistory.set(apiKey, history);
     
+    // JSON ответ
     res.json({
       success: true,
       image_url: result.uri,
       original_task_id: task_id,
       selected_index: index,
-      description: `Картинка ${index} увеличена`,
+      description: `Картинка ${index} успешно увеличена`,
       timestamp: new Date().toISOString()
     });
     
@@ -733,11 +860,10 @@ app.post('/api/upscale', validateApiKey, async (req, res) => {
     console.error('❌ Ошибка upscale:', error);
     console.error('Stack trace:', error.stack);
     
-    res.json({
+    res.status(500).json({
       success: false,
       error: error.message,
-      fallback: true,
-      message: "Используйте альтернативный метод обработки"
+      details: 'Проверьте логи сервера для подробностей'
     });
   }
 });
