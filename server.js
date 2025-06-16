@@ -1,4 +1,4 @@
-// server.js - Полная исправленная версия
+// server.js - Супер продвинутая версия с асинхронной генерацией
 const express = require('express');
 const { Midjourney } = require('midjourney');
 const fs = require('fs').promises;
@@ -160,7 +160,7 @@ app.get('/health', (req, res) => {
       blockedUsers,
       adminUsers,
       activeSessions: userSessions.size,
-      activeTasks: activeTasks.size
+      activeTasks: activeTasks.size  // Добавлено!
     },
     timestamp: new Date().toISOString(),
     environment: process.env.NODE_ENV || 'development'
@@ -350,7 +350,7 @@ app.get('/admin/history', (req, res) => {
   res.json({ history: allHistory.slice(0, 100) });
 });
 
-// USER: Генерация изображения (АСИНХРОННАЯ ВЕРСИЯ) - ИСПРАВЛЕННАЯ!
+// USER: Генерация изображения (АСИНХРОННАЯ ВЕРСИЯ)
 app.post('/api/generate', validateApiKey, async (req, res) => {
   try {
     const { prompt } = req.body;
@@ -373,7 +373,7 @@ app.post('/api/generate', validateApiKey, async (req, res) => {
       status: 'processing',
       prompt: prompt,
       user: user.userEmail,
-      apiKey: apiKey,
+      apiKey: apiKey,  // Добавлено для проверки прав доступа
       startedAt: new Date().toISOString()
     });
     
@@ -403,36 +403,28 @@ app.post('/api/generate', validateApiKey, async (req, res) => {
           }
         });
         
-        // ВАЖНОЕ ИСПРАВЛЕНИЕ: Логируем полный результат для отладки
-        console.log('Результат генерации:', JSON.stringify(result, null, 2));
-        
-        // ВАЖНОЕ ИСПРАВЛЕНИЕ: Сохраняем ВСЕ необходимые данные для upscale
+        // Обновляем статус на completed
         activeTasks.set(taskId, {
           status: 'completed',
           prompt: prompt,
           image_url: result.uri,
-          midjourney_id: result.id,  // Discord message ID - КРИТИЧНО ДЛЯ UPSCALE!
-          hash: result.hash || result.content || null,  // Сохраняем hash если есть
-          flags: result.flags || 0,
+          midjourney_id: result.id,
           user: user.userEmail,
           apiKey: apiKey,
           completedAt: new Date().toISOString()
         });
         
-        // Обновляем счетчики
+        // Обновляем счетчики и историю
         let currentUsage = userUsage.get(apiKey) || { count: 0, resetDate: new Date() };
         if (user.role !== 'admin') {
           currentUsage.count += 1;
           userUsage.set(apiKey, currentUsage);
         }
         
-        // ВАЖНОЕ ИСПРАВЛЕНИЕ: Сохраняем в историю с ОБОИМИ ID!
         const historyItem = {
           prompt,
           imageUrl: result.uri,
-          taskId: result.id,  // Discord message ID
-          internalTaskId: taskId,  // Наш внутренний task ID - ВАЖНО!
-          hash: result.hash || result.content || null,  // Сохраняем hash
+          taskId: result.id,
           timestamp: new Date().toISOString()
         };
         
@@ -464,7 +456,7 @@ app.post('/api/generate', validateApiKey, async (req, res) => {
   }
 });
 
-// USER: Проверка статуса генерации - ИСПРАВЛЕННЫЙ!
+// USER: Проверка статуса генерации (НОВЫЙ ENDPOINT!)
 app.get('/api/task/:taskId', validateApiKey, (req, res) => {
   const { taskId } = req.params;
   const task = activeTasks.get(taskId);
@@ -484,16 +476,15 @@ app.get('/api/task/:taskId', validateApiKey, (req, res) => {
   }
   
   const response = {
-    task_id: taskId,  // Внутренний ID для upscale!
+    task_id: taskId,
     status: task.status,
     prompt: task.prompt
   };
   
   if (task.status === 'completed') {
     response.image_url = task.image_url;
-    response.midjourney_id = task.midjourney_id;  // Discord message ID
-    response.discord_message_id = task.midjourney_id;  // Для ясности
-    response.hash = task.hash;  // Hash для upscale
+    response.midjourney_id = task.midjourney_id;
+    response.task_id = task.midjourney_id;  // Для совместимости с upscale
     
     // Удаляем выполненную задачу через 5 минут
     setTimeout(() => {
@@ -508,7 +499,7 @@ app.get('/api/task/:taskId', validateApiKey, (req, res) => {
   res.json(response);
 });
 
-// ADMIN: Список всех активных задач
+// ADMIN: Список всех активных задач (НОВЫЙ ENDPOINT!)
 app.get('/api/tasks', validateApiKey, (req, res) => {
   if (req.user.role !== 'admin') {
     return res.status(403).json({ error: 'Только для администраторов' });
@@ -528,175 +519,17 @@ app.get('/api/tasks', validateApiKey, (req, res) => {
   res.json({ tasks, total: tasks.length });
 });
 
-// Генерация nonce как в Discord
-function generateNonce() {
-  const timestamp = Date.now() - 1420070400000;
-  const workerId = Math.floor(Math.random() * 1024);
-  const processId = Math.floor(Math.random() * 16384);
-  const counter = Math.floor(Math.random() * 4096);
-  
-  return ((timestamp * 524288) + (workerId * 16384) + processId * 4096 + counter).toString();
-}
-
-// Функция ожидания с проверкой результата
-async function waitForUpscaleResult(channelId, salaiToken, originalMessageId, index, maxAttempts = 30) {
-  console.log(`⏳ Ожидаем результат upscale для сообщения ${originalMessageId}, картинка ${index}`);
-  
-  for (let attempt = 0; attempt < maxAttempts; attempt++) {
-    await new Promise(resolve => setTimeout(resolve, 2000)); // Ждем 2 секунды
-    
-    try {
-      // Получаем последние сообщения из канала
-      const response = await fetch(`https://discord.com/api/v9/channels/${channelId}/messages?limit=50`, {
-        headers: {
-          'Authorization': salaiToken,
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-        }
-      });
-      
-      if (!response.ok) continue;
-      
-      const messages = await response.json();
-      
-      // Ищем сообщение с upscale результатом
-      for (const msg of messages) {
-        // Проверяем что это сообщение от Midjourney бота
-        if (msg.author.id === '936929561302675456' && 
-            msg.attachments && 
-            msg.attachments.length > 0 &&
-            msg.content) {
-          
-          // Проверяем что это наш upscale по содержимому
-          if (msg.content.includes(`Image #${index}`) || 
-              (msg.reference && msg.reference.message_id === originalMessageId)) {
-            
-            console.log(`✅ Найден результат upscale!`);
-            return {
-              success: true,
-              url: msg.attachments[0].url,
-              proxy_url: msg.attachments[0].proxy_url,
-              message_id: msg.id
-            };
-          }
-        }
-      }
-    } catch (error) {
-      console.error(`Попытка ${attempt + 1}: ${error.message}`);
-    }
-  }
-  
-  return { success: false, error: 'Timeout waiting for upscale result' };
-}
-
-// Собственная реализация upscale через Discord API
-async function customUpscale(messageId, index, hash, user) {
-  console.log('🚀 Используем собственную реализацию upscale');
-  
-  const customId = `MJ::JOB::upsample::${index}::${hash}`;
-  const nonce = generateNonce();
-  
-  const payload = {
-    type: 3, // MESSAGE_COMPONENT
-    nonce: nonce,
-    guild_id: user.serverId,
-    channel_id: user.channelId,
-    message_flags: 0,
-    message_id: messageId,
-    application_id: "936929561302675456", // Midjourney Bot ID
-    session_id: "cb06f61453064c0983f2adae2a88c223", // Фиксированный session_id
-    data: {
-      component_type: 2, // BUTTON
-      custom_id: customId
-    }
-  };
-  
-  console.log('📤 Отправляем запрос на upscale:', {
-    messageId,
-    index,
-    customId,
-    nonce
-  });
-  
-  try {
-    // Отправляем interaction
-    const response = await fetch('https://discord.com/api/v9/interactions', {
-      method: 'POST',
-      headers: {
-        'Authorization': user.salaiToken,
-        'Content-Type': 'application/json',
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Accept': '*/*',
-        'Accept-Language': 'en-US,en;q=0.9',
-        'Origin': 'https://discord.com',
-        'Referer': 'https://discord.com/channels/@me',
-        'Sec-Ch-Ua': '"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"',
-        'Sec-Ch-Ua-Mobile': '?0',
-        'Sec-Ch-Ua-Platform': '"Windows"',
-        'Sec-Fetch-Dest': 'empty',
-        'Sec-Fetch-Mode': 'cors',
-        'Sec-Fetch-Site': 'same-origin',
-        'X-Debug-Options': 'bugReporterEnabled',
-        'X-Discord-Locale': 'en-US',
-        'X-Discord-Timezone': 'Europe/Moscow'
-      },
-      body: JSON.stringify(payload)
-    });
-    
-    const statusCode = response.status;
-    const responseText = await response.text();
-    
-    console.log(`📥 Discord ответ: ${statusCode}`);
-    if (responseText) console.log('Response body:', responseText);
-    
-    if (statusCode === 204) {
-      console.log('✅ Команда upscale принята Discord!');
-      
-      // Ждем результат
-      const result = await waitForUpscaleResult(
-        user.channelId, 
-        user.salaiToken, 
-        messageId, 
-        index
-      );
-      
-      if (result.success) {
-        return {
-          uri: result.url,
-          proxy_url: result.proxy_url,
-          success: true
-        };
-      } else {
-        throw new Error(result.error || 'Failed to get upscale result');
-      }
-      
-    } else if (statusCode === 400) {
-      throw new Error(`Bad Request: ${responseText}`);
-    } else if (statusCode === 401) {
-      throw new Error('Unauthorized: Check your Discord token');
-    } else if (statusCode === 404) {
-      throw new Error('Message not found or button expired');
-    } else {
-      throw new Error(`Discord API error: ${statusCode} - ${responseText}`);
-    }
-    
-  } catch (error) {
-    console.error('❌ Ошибка customUpscale:', error);
-    throw error;
-  }
-}
-
-// USER: Upscale изображения - ПОЛНОСТЬЮ ИСПРАВЛЕННЫЙ!
+// USER: Upscale изображения с поддержкой бинарного вывода
 app.post('/api/upscale', validateApiKey, async (req, res) => {
   try {
     const { task_id, index } = req.body;
-    const returnBinary = req.body.returnBinary || false;
     const { user, apiKey } = req;
     
     if (!task_id || !index) {
       return res.status(400).json({
         error: 'Параметры task_id и index обязательны',
         example: { 
-          task_id: "task_1234567890_abc123", 
+          task_id: "1379740446099771424", 
           index: 1,
           note: "index должен быть от 1 до 4"
         }
@@ -710,74 +543,52 @@ app.post('/api/upscale', validateApiKey, async (req, res) => {
       });
     }
     
-    console.log(`🔍 Upscale для ${user.userEmail}: задача ${task_id}, картинка ${index}, binary: ${returnBinary}`);
+    console.log(`🔍 Upscale для ${user.userEmail}: задача ${task_id}, картинка ${index}`);
     
-    // Поиск данных задачи
-    let originalTask = null;
-    let msgId, hash;
-    
-    // Проверяем в активных задачах
-    const activeTask = activeTasks.get(task_id);
-    if (activeTask && activeTask.status === 'completed') {
-      msgId = activeTask.midjourney_id;
-      hash = activeTask.hash;
-      originalTask = {
-        imageUrl: activeTask.image_url,
-        taskId: activeTask.midjourney_id
-      };
-      console.log('📋 Найдено в активных задачах:', { msgId, hash });
-    }
-    
-    // Если не нашли в активных, ищем в истории
-    if (!originalTask) {
-      const history = generationHistory.get(apiKey) || [];
-      originalTask = history.find(item => 
-        item.internalTaskId === task_id || item.taskId === task_id
-      );
-      
-      if (originalTask) {
-        msgId = originalTask.taskId;
-        hash = originalTask.hash;
-        console.log('📋 Найдено в истории:', { msgId, hash });
-      }
-    }
+    const history = generationHistory.get(apiKey) || [];
+    const originalTask = history.find(item => item.taskId === task_id);
     
     if (!originalTask || !originalTask.imageUrl) {
       return res.status(404).json({
-        error: 'Задача не найдена. Сначала сгенерируйте изображение.',
-        hint: 'Используйте task_id из /api/generate или проверьте статус через /api/task/:taskId'
+        error: 'Задача не найдена. Сначала сгенерируйте изображение.'
       });
     }
     
-    // Если hash не сохранен, извлекаем из URL
-    if (!hash) {
-      const urlParts = originalTask.imageUrl.split('/');
-      const filename = urlParts[urlParts.length - 1];
-      const hashMatch = filename.match(/([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})/);
-      hash = hashMatch ? hashMatch[1] : null;
-      console.log(`📌 Извлечен hash из URL: ${hash}`);
+    const urlParts = originalTask.imageUrl.split('/');
+    const filename = urlParts[urlParts.length - 1];
+    const hashMatch = filename.match(/([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})/);
+    const hash = hashMatch ? hashMatch[1] : task_id;
+    
+    console.log(`📌 Извлечен hash: ${hash}`);
+    
+    let client = userSessions.get(apiKey);
+    if (!client) {
+      client = await getMidjourneyClient(user);
+      userSessions.set(apiKey, client);
     }
     
-    if (!msgId || !hash) {
-      return res.status(400).json({
-        error: 'Недостаточно данных для upscale',
-        details: { msgId: !!msgId, hash: !!hash }
-      });
-    }
+    const result = await client.Upscale({
+      index: index,
+      msgId: task_id,
+      hash: hash,
+      flags: 0,
+      loading: (uri, progress) => {
+        console.log(`${user.userEmail} - Upscale прогресс: ${progress}%`);
+      }
+    });
     
-    // ИСПОЛЬЗУЕМ НАШУ СОБСТВЕННУЮ РЕАЛИЗАЦИЮ!
-    console.log('🔧 Используем customUpscale вместо библиотеки');
+    console.log(`✅ Upscale завершен для ${user.userEmail}`);
     
-    const result = await customUpscale(msgId, index, hash, user);
+    const needBinary = req.headers['x-make-binary'] === 'true' || 
+                      req.query.binary === 'true' ||
+                      req.headers['accept'] === 'application/octet-stream';
     
-    console.log(`✅ Upscale завершен успешно!`);
-    
-    // Обработка бинарного режима
-    if (returnBinary === true) {
+    if (needBinary) {
       console.log(`📥 Бинарный режим активирован`);
       
       try {
         const https = require('https');
+        const url = require('url');
         const imageUrl = new URL(result.uri);
         
         https.get(imageUrl, (imageResponse) => {
@@ -829,15 +640,17 @@ app.post('/api/upscale', validateApiKey, async (req, res) => {
         
       } catch (error) {
         console.error('⚠️ Ошибка в бинарном режиме:', error.message);
+        return res.json({
+          success: true,
+          image_url: result.uri,
+          error: 'Не удалось загрузить изображение для бинарной отправки'
+        });
       }
     }
     
-    // Сохраняем в историю
-    const history = generationHistory.get(apiKey) || [];
     const historyItem = {
       action: 'upscale',
       originalTaskId: task_id,
-      discordMessageId: msgId,
       selectedIndex: index,
       imageUrl: result.uri,
       timestamp: new Date().toISOString()
@@ -846,24 +659,24 @@ app.post('/api/upscale', validateApiKey, async (req, res) => {
     history.push(historyItem);
     generationHistory.set(apiKey, history);
     
-    // JSON ответ
     res.json({
       success: true,
       image_url: result.uri,
       original_task_id: task_id,
       selected_index: index,
-      description: `Картинка ${index} успешно увеличена`,
+      description: `Картинка ${index} увеличена`,
       timestamp: new Date().toISOString()
     });
     
   } catch (error) {
     console.error('❌ Ошибка upscale:', error);
-    console.error('Stack trace:', error.stack);
+    console.error('Детали:', error.message);
     
-    res.status(500).json({
+    res.json({
       success: false,
       error: error.message,
-      details: 'Проверьте логи сервера для подробностей'
+      fallback: true,
+      message: "Используйте альтернативный метод обработки"
     });
   }
 });
@@ -877,19 +690,19 @@ app.get('/admin', (req, res) => {
 app.get('/', (req, res) => {
   res.json({
     name: 'Midjourney API Service',
-    version: '2.2.0',
+    version: '2.1.0',
     endpoints: {
       health: '/health',
       admin: '/admin',
       api: {
         generate: 'POST /api/generate (async)',
-        status: 'GET /api/task/:taskId',
-        tasks: 'GET /api/tasks (admin only)',
+        status: 'GET /api/task/:taskId',      // НОВЫЙ!
+        tasks: 'GET /api/tasks (admin only)', // НОВЫЙ!
         upscale: 'POST /api/upscale'
       }
     },
     changes: {
-      '2.2.0': 'Исправлена ошибка 404 при upscale, добавлена поддержка returnBinary'
+      '2.1.0': 'Добавлена асинхронная генерация с проверкой статуса'
     }
   });
 });
