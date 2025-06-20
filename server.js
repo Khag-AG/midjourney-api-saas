@@ -519,13 +519,15 @@ app.get('/api/tasks', validateApiKey, (req, res) => {
   res.json({ tasks, total: tasks.length });
 });
 
+
 // USER: Upscale изображения с поддержкой бинарного вывода
 app.post('/api/upscale', validateApiKey, async (req, res) => {
   try {
     const { task_id, index } = req.body;
+    const idx = parseInt(index, 10);
     const { user, apiKey } = req;
     
-    if (!task_id || !index) {
+    if (!task_id || Number.isNaN(idx)) {
       return res.status(400).json({
         error: 'Параметры task_id и index обязательны',
         example: { 
@@ -536,14 +538,14 @@ app.post('/api/upscale', validateApiKey, async (req, res) => {
       });
     }
     
-    if (index < 1 || index > 4) {
+    if (idx < 1 || idx > 4) {
       return res.status(400).json({
         error: 'Параметр index должен быть от 1 до 4',
         detail: '1 - верхняя левая, 2 - верхняя правая, 3 - нижняя левая, 4 - нижняя правая'
       });
     }
     
-    console.log(`🔍 Upscale для ${user.userEmail}: задача ${task_id}, картинка ${index}`);
+      console.log(`🔍 Upscale для ${user.userEmail}: задача ${task_id}, картинка ${idx}`);
     
     const history = generationHistory.get(apiKey) || [];
     const originalTask = history.find(item => item.taskId === task_id);
@@ -566,9 +568,9 @@ app.post('/api/upscale', validateApiKey, async (req, res) => {
       client = await getMidjourneyClient(user);
       userSessions.set(apiKey, client);
     }
-    
+
     const result = await client.Upscale({
-      index: index,
+      index: idx,
       msgId: task_id,
       hash: hash,
       flags: 0,
@@ -576,7 +578,7 @@ app.post('/api/upscale', validateApiKey, async (req, res) => {
         console.log(`${user.userEmail} - Upscale прогресс: ${progress}%`);
       }
     });
-    
+
     console.log(`✅ Upscale завершен для ${user.userEmail}`);
     
     const needBinary = req.headers['x-make-binary'] === 'true' || 
@@ -588,7 +590,6 @@ app.post('/api/upscale', validateApiKey, async (req, res) => {
       
       try {
         const https = require('https');
-        const url = require('url');
         const imageUrl = new URL(result.uri);
         
         https.get(imageUrl, (imageResponse) => {
@@ -610,10 +611,10 @@ app.post('/api/upscale', validateApiKey, async (req, res) => {
             res.set({
               'Content-Type': 'image/png',
               'Content-Length': imageBuffer.length,
-              'Content-Disposition': `attachment; filename="midjourney_upscaled_${index}_${Date.now()}.png"`,
+              'Content-Disposition': `attachment; filename="midjourney_upscaled_${idx}_${Date.now()}.png"`,
               'X-Image-URL': result.uri,
               'X-Task-ID': task_id,
-              'X-Selected-Index': index.toString()
+              'X-Selected-Index': idx.toString()
             });
             
             res.send(imageBuffer);
@@ -651,7 +652,7 @@ app.post('/api/upscale', validateApiKey, async (req, res) => {
     const historyItem = {
       action: 'upscale',
       originalTaskId: task_id,
-      selectedIndex: index,
+      selectedIndex: idx,
       imageUrl: result.uri,
       timestamp: new Date().toISOString()
     };
@@ -663,8 +664,8 @@ app.post('/api/upscale', validateApiKey, async (req, res) => {
       success: true,
       image_url: result.uri,
       original_task_id: task_id,
-      selected_index: index,
-      description: `Картинка ${index} увеличена`,
+      selected_index: idx,
+      description: `Картинка ${idx} увеличена`,
       timestamp: new Date().toISOString()
     });
     
