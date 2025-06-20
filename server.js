@@ -519,13 +519,121 @@ app.get('/api/tasks', validateApiKey, (req, res) => {
   res.json({ tasks, total: tasks.length });
 });
 
+// Генерация nonce как в Discord
+function generateNonce() {
+  const timestamp = Date.now() - 1420070400000;
+  const workerId = Math.floor(Math.random() * 1024);
+  const processId = Math.floor(Math.random() * 16384);
+  const counter = Math.floor(Math.random() * 4096);
+  return ((timestamp * 524288) + (workerId * 16384) + processId * 4096 + counter).toString();
+}
+
+// Ожидание результата upscale
+async function waitForUpscaleResult(channelId, salaiToken, originalMessageId, index, maxAttempts = 30) {
+  console.log(`⏳ Ожидаем результат upscale для сообщения ${originalMessageId}, картинка ${index}`);
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    await new Promise(resolve => setTimeout(resolve, 2000));
+    try {
+      const response = await fetch(`https://discord.com/api/v9/channels/${channelId}/messages?limit=50`, {
+        headers: {
+          'Authorization': salaiToken,
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        }
+      });
+      if (!response.ok) continue;
+      const messages = await response.json();
+      for (const msg of messages) {
+        if (msg.author.id === '936929561302675456' && msg.attachments && msg.attachments.length > 0 && msg.content) {
+          if (msg.content.includes(`Image #${index}`) || (msg.reference && msg.reference.message_id === originalMessageId)) {
+            console.log('✅ Найден результат upscale!');
+            return { success: true, url: msg.attachments[0].url, proxy_url: msg.attachments[0].proxy_url, message_id: msg.id };
+          }
+        }
+      }
+    } catch (error) {
+      console.error(`Попытка ${attempt + 1}: ${error.message}`);
+    }
+  }
+  return { success: false, error: 'Timeout waiting for upscale result' };
+}
+
+// Собственная реализация upscale через Discord API
+async function customUpscale(messageId, index, hash, user) {
+  console.log('🚀 Используем собственную реализацию upscale');
+  const customId = `MJ::JOB::upsample::${index}::${hash}`;
+  const nonce = generateNonce();
+  const payload = {
+    type: 3,
+    nonce,
+    guild_id: user.serverId,
+    channel_id: user.channelId,
+    message_flags: 0,
+    message_id: messageId,
+    application_id: '936929561302675456',
+    session_id: 'cb06f61453064c0983f2adae2a88c223',
+    data: { component_type: 2, custom_id: customId }
+  };
+
+  console.log('📤 Отправляем запрос на upscale:', { messageId, index, customId, nonce });
+  try {
+    const response = await fetch('https://discord.com/api/v9/interactions', {
+      method: 'POST',
+      headers: {
+        'Authorization': user.salaiToken,
+        'Content-Type': 'application/json',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept': '*/*',
+        'Accept-Language': 'en-US,en;q=0.9',
+        'Origin': 'https://discord.com',
+        'Referer': 'https://discord.com/channels/@me',
+        'Sec-Ch-Ua': '"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"',
+        'Sec-Ch-Ua-Mobile': '?0',
+        'Sec-Ch-Ua-Platform': '"Windows"',
+        'Sec-Fetch-Dest': 'empty',
+        'Sec-Fetch-Mode': 'cors',
+        'Sec-Fetch-Site': 'same-origin',
+        'X-Debug-Options': 'bugReporterEnabled',
+        'X-Discord-Locale': 'en-US',
+        'X-Discord-Timezone': 'Europe/Moscow'
+      },
+      body: JSON.stringify(payload)
+    });
+
+    const statusCode = response.status;
+    const responseText = await response.text();
+    console.log(`📥 Discord ответ: ${statusCode}`);
+    if (responseText) console.log('Response body:', responseText);
+
+    if (statusCode === 204) {
+      console.log('✅ Команда upscale принята Discord!');
+      const result = await waitForUpscaleResult(user.channelId, user.salaiToken, messageId, index);
+      if (result.success) {
+        return { uri: result.url, proxy_url: result.proxy_url, success: true };
+      }
+      throw new Error(result.error || 'Failed to get upscale result');
+    } else if (statusCode === 400) {
+      throw new Error(`Bad Request: ${responseText}`);
+    } else if (statusCode === 401) {
+      throw new Error('Unauthorized: Check your Discord token');
+    } else if (statusCode === 404) {
+      throw new Error('Message not found or button expired');
+    } else {
+      throw new Error(`Discord API error: ${statusCode} - ${responseText}`);
+    }
+  } catch (error) {
+    console.error('❌ Ошибка customUpscale:', error);
+    throw error;
+  }
+}
+
 // USER: Upscale изображения с поддержкой бинарного вывода
 app.post('/api/upscale', validateApiKey, async (req, res) => {
   try {
     const { task_id, index } = req.body;
+    const idx = parseInt(index, 10);
     const { user, apiKey } = req;
     
-    if (!task_id || index === undefined) {
+    if (!task_id || Number.isNaN(idx)) {
       return res.status(400).json({
         error: 'Параметры task_id и index обязательны',
         example: { 
@@ -536,14 +644,14 @@ app.post('/api/upscale', validateApiKey, async (req, res) => {
       });
     }
     
-    if (index < 1 || index > 4) {
+    if (idx < 1 || idx > 4) {
       return res.status(400).json({
         error: 'Параметр index должен быть от 1 до 4',
         detail: '1 - верхняя левая, 2 - верхняя правая, 3 - нижняя левая, 4 - нижняя правая'
       });
     }
     
-    console.log(`🔍 Upscale для ${user.userEmail}: задача ${task_id}, картинка ${index}`);
+    console.log(`🔍 Upscale для ${user.userEmail}: задача ${task_id}, картинка ${idx}`);
     
     const history = generationHistory.get(apiKey) || [];
     const originalTask = history.find(item => item.taskId === task_id);
@@ -561,22 +669,8 @@ app.post('/api/upscale', validateApiKey, async (req, res) => {
     
     console.log(`📌 Извлечен hash: ${hash}`);
     
-    let client = userSessions.get(apiKey);
-    if (!client) {
-      client = await getMidjourneyClient(user);
-      userSessions.set(apiKey, client);
-    }
-    
-    const result = await client.Upscale({
-      index: index,
-      msgId: task_id,
-      hash: hash,
-      flags: 0,
-      loading: (uri, progress) => {
-        console.log(`${user.userEmail} - Upscale прогресс: ${progress}%`);
-      }
-    });
-    
+    const result = await customUpscale(task_id, idx, hash, user);
+
     console.log(`✅ Upscale завершен для ${user.userEmail}`);
     
     const needBinary = req.headers['x-make-binary'] === 'true' || 
@@ -588,7 +682,6 @@ app.post('/api/upscale', validateApiKey, async (req, res) => {
       
       try {
         const https = require('https');
-        const url = require('url');
         const imageUrl = new URL(result.uri);
         
         https.get(imageUrl, (imageResponse) => {
@@ -610,10 +703,10 @@ app.post('/api/upscale', validateApiKey, async (req, res) => {
             res.set({
               'Content-Type': 'image/png',
               'Content-Length': imageBuffer.length,
-              'Content-Disposition': `attachment; filename="midjourney_upscaled_${index}_${Date.now()}.png"`,
+              'Content-Disposition': `attachment; filename="midjourney_upscaled_${idx}_${Date.now()}.png"`,
               'X-Image-URL': result.uri,
               'X-Task-ID': task_id,
-              'X-Selected-Index': index.toString()
+              'X-Selected-Index': idx.toString()
             });
             
             res.send(imageBuffer);
@@ -651,7 +744,7 @@ app.post('/api/upscale', validateApiKey, async (req, res) => {
     const historyItem = {
       action: 'upscale',
       originalTaskId: task_id,
-      selectedIndex: index,
+      selectedIndex: idx,
       imageUrl: result.uri,
       timestamp: new Date().toISOString()
     };
@@ -663,8 +756,8 @@ app.post('/api/upscale', validateApiKey, async (req, res) => {
       success: true,
       image_url: result.uri,
       original_task_id: task_id,
-      selected_index: index,
-      description: `Картинка ${index} увеличена`,
+      selected_index: idx,
+      description: `Картинка ${idx} увеличена`,
       timestamp: new Date().toISOString()
     });
     
