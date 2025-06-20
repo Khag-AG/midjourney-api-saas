@@ -525,7 +525,7 @@ app.post('/api/upscale', validateApiKey, async (req, res) => {
     const { task_id, index } = req.body;
     const { user, apiKey } = req;
     
-    if (!task_id || !index) {
+    if (!task_id || index === undefined) {
       return res.status(400).json({
         error: 'Параметры task_id и index обязательны',
         example: { 
