@@ -626,153 +626,132 @@ async function customUpscale(messageId, index, hash, user) {
   }
 }
 
-// USER: Upscale изображения с поддержкой бинарного вывода
-app.post('/api/upscale', validateApiKey, async (req, res) => {
+// Собственная реализация upscale через Discord API
+async function customUpscale(messageId, index, hash, user) {
+  console.log('🚀 Используем собственную реализацию upscale');
+  console.log('📋 Параметры upscale:', {
+    messageId,
+    index,
+    hash,
+    serverId: user.serverId,
+    channelId: user.channelId,
+    userEmail: user.userEmail
+  });
+  
+  // Проверяем существование сообщения
   try {
-    const { task_id, index } = req.body;
-    const idx = parseInt(index, 10);
-    const { user, apiKey } = req;
+    const checkUrl = `https://discord.com/api/v9/channels/${user.channelId}/messages/${messageId}`;
+    console.log(`🔍 Проверяем сообщение: ${checkUrl}`);
     
-    if (!task_id || Number.isNaN(idx)) {
-      return res.status(400).json({
-        error: 'Параметры task_id и index обязательны',
-        example: { 
-          task_id: "1379740446099771424", 
-          index: 1,
-          note: "index должен быть от 1 до 4"
-        }
-      });
-    }
-    
-    if (idx < 1 || idx > 4) {
-      return res.status(400).json({
-        error: 'Параметр index должен быть от 1 до 4',
-        detail: '1 - верхняя левая, 2 - верхняя правая, 3 - нижняя левая, 4 - нижняя правая'
-      });
-    }
-    
-    console.log(`🔍 Upscale для ${user.userEmail}: задача ${task_id}, картинка ${idx}`);
-    
-    const history = generationHistory.get(apiKey) || [];
-    const originalTask = history.find(item => item.taskId === task_id);
-    
-    if (!originalTask || !originalTask.imageUrl) {
-      return res.status(404).json({
-        error: 'Задача не найдена. Сначала сгенерируйте изображение.'
-      });
-    }
-    
-    const urlParts = originalTask.imageUrl.split('/');
-    const filename = urlParts[urlParts.length - 1];
-    const hashMatch = filename.match(/([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})/);
-    const hash = hashMatch ? hashMatch[1] : task_id;
-    
-    console.log(`📌 Извлечен hash: ${hash}`);
-    
-    const result = await customUpscale(task_id, idx, hash, user);
-
-    console.log(`✅ Upscale завершен для ${user.userEmail}`);
-    
-    const needBinary = req.headers['x-make-binary'] === 'true' || 
-                      req.query.binary === 'true' ||
-                      req.headers['accept'] === 'application/octet-stream';
-    
-    if (needBinary) {
-      console.log(`📥 Бинарный режим активирован`);
-      
-      try {
-        const https = require('https');
-        const imageUrl = new URL(result.uri);
-        
-        https.get(imageUrl, (imageResponse) => {
-          if (imageResponse.statusCode !== 200) {
-            throw new Error(`HTTP error! status: ${imageResponse.statusCode}`);
-          }
-          
-          const chunks = [];
-          
-          imageResponse.on('data', (chunk) => {
-            chunks.push(chunk);
-          });
-          
-          imageResponse.on('end', () => {
-            const imageBuffer = Buffer.concat(chunks);
-            
-            console.log(`✅ Загружено изображение: ${imageBuffer.length} байт`);
-            
-            res.set({
-              'Content-Type': 'image/png',
-              'Content-Length': imageBuffer.length,
-              'Content-Disposition': `attachment; filename="midjourney_upscaled_${idx}_${Date.now()}.png"`,
-              'X-Image-URL': result.uri,
-              'X-Task-ID': task_id,
-              'X-Selected-Index': idx.toString()
-            });
-            
-            res.send(imageBuffer);
-          });
-          
-          imageResponse.on('error', (error) => {
-            console.error('⚠️ Ошибка загрузки изображения:', error.message);
-            res.json({
-              success: true,
-              image_url: result.uri,
-              error: 'Не удалось загрузить изображение для бинарной отправки'
-            });
-          });
-        }).on('error', (error) => {
-          console.error('⚠️ Ошибка HTTPS запроса:', error.message);
-          res.json({
-            success: true,
-            image_url: result.uri,
-            error: 'Не удалось загрузить изображение для бинарной отправки'
-          });
-        });
-        
-        return;
-        
-      } catch (error) {
-        console.error('⚠️ Ошибка в бинарном режиме:', error.message);
-        return res.json({
-          success: true,
-          image_url: result.uri,
-          error: 'Не удалось загрузить изображение для бинарной отправки'
-        });
+    const checkResponse = await fetch(checkUrl, {
+      headers: {
+        'Authorization': user.salaiToken,
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
       }
+    });
+    
+    if (!checkResponse.ok) {
+      const errorText = await checkResponse.text();
+      console.error(`❌ Сообщение ${messageId} не найдено в канале ${user.channelId}`);
+      console.error(`Ответ Discord: ${checkResponse.status} - ${errorText}`);
+      throw new Error(`Message ${messageId} not found in channel ${user.channelId}`);
     }
     
-    const historyItem = {
-      action: 'upscale',
-      originalTaskId: task_id,
-      selectedIndex: idx,
-      imageUrl: result.uri,
-      timestamp: new Date().toISOString()
-    };
-    
-    history.push(historyItem);
-    generationHistory.set(apiKey, history);
-    
-    res.json({
-      success: true,
-      image_url: result.uri,
-      original_task_id: task_id,
-      selected_index: idx,
-      description: `Картинка ${idx} увеличена`,
-      timestamp: new Date().toISOString()
+    const message = await checkResponse.json();
+    console.log('✅ Сообщение найдено:', {
+      id: message.id,
+      author: message.author?.username,
+      hasComponents: !!message.components
     });
     
   } catch (error) {
-    console.error('❌ Ошибка upscale:', error);
-    console.error('Детали:', error.message);
-    
-    res.json({
-      success: false,
-      error: error.message,
-      fallback: true,
-      message: "Используйте альтернативный метод обработки"
-    });
+    console.error('❌ Ошибка проверки сообщения:', error);
+    // Продолжаем выполнение, так как сообщение может быть доступно для interaction
   }
-});
+  
+  const customId = `MJ::JOB::upsample::${index}::${hash}`;
+  const nonce = generateNonce();
+  
+  const payload = {
+    type: 3,
+    nonce,
+    guild_id: user.serverId,
+    channel_id: user.channelId,
+    message_flags: 0,
+    message_id: messageId,
+    application_id: '936929561302675456',
+    session_id: 'cb06f61453064c0983f2adae2a88c223',
+    data: { 
+      component_type: 2, 
+      custom_id: customId 
+    }
+  };
+
+  console.log('📤 Отправляем запрос на upscale:', { 
+    messageId, 
+    index, 
+    customId, 
+    nonce,
+    guildId: user.serverId,
+    channelId: user.channelId
+  });
+  
+  try {
+    const response = await fetch('https://discord.com/api/v9/interactions', {
+      method: 'POST',
+      headers: {
+        'Authorization': user.salaiToken,
+        'Content-Type': 'application/json',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept': '*/*',
+        'Accept-Language': 'en-US,en;q=0.9',
+        'Origin': 'https://discord.com',
+        'Referer': `https://discord.com/channels/${user.serverId}/${user.channelId}`,
+        'Sec-Ch-Ua': '"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"',
+        'Sec-Ch-Ua-Mobile': '?0',
+        'Sec-Ch-Ua-Platform': '"Windows"',
+        'Sec-Fetch-Dest': 'empty',
+        'Sec-Fetch-Mode': 'cors',
+        'Sec-Fetch-Site': 'same-origin',
+        'X-Debug-Options': 'bugReporterEnabled',
+        'X-Discord-Locale': 'en-US',
+        'X-Discord-Timezone': 'Europe/Moscow'
+      },
+      body: JSON.stringify(payload)
+    });
+
+    const statusCode = response.status;
+    const responseText = await response.text();
+    console.log(`📥 Discord ответ: ${statusCode}`);
+    if (responseText) console.log('Response body:', responseText);
+
+    if (statusCode === 204) {
+      console.log('✅ Команда upscale принята Discord!');
+      const result = await waitForUpscaleResult(user.channelId, user.salaiToken, messageId, index);
+      if (result.success) {
+        return { 
+          uri: result.url, 
+          proxy_url: result.proxy_url, 
+          success: true,
+          message_id: result.message_id
+        };
+      }
+      throw new Error(result.error || 'Failed to get upscale result');
+    } else if (statusCode === 400) {
+      const errorData = responseText ? JSON.parse(responseText) : {};
+      throw new Error(`Bad Request: ${errorData.message || responseText}`);
+    } else if (statusCode === 401) {
+      throw new Error('Unauthorized: Check your Discord token');
+    } else if (statusCode === 404) {
+      throw new Error('Message not found or button expired. Try generating a new image.');
+    } else {
+      throw new Error(`Discord API error: ${statusCode} - ${responseText}`);
+    }
+  } catch (error) {
+    console.error('❌ Ошибка customUpscale:', error);
+    throw error;
+  }
+}
 
 // Админ панель (HTML интерфейс)
 app.get('/admin', (req, res) => {
