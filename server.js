@@ -467,8 +467,26 @@ app.post('/api/generate', validateApiKey, async (req, res) => {
         // Если временное, попробуем подождать и получить постоянное
         if (result.uri.includes('ephemeral')) {
           console.log('⚠️ Получено временное вложение, ждем постоянное...');
-          await new Promise(resolve => setTimeout(resolve, 5000));
-          // Здесь можно попробовать запросить сообщение снова через Discord API
+          const permanentResult = await waitForPermanentAttachment(user.channelId, user.salaiToken, result.id);
+          
+          if (permanentResult.success && permanentResult.message.attachments && permanentResult.message.attachments.length > 0) {
+            const permanentUrl = permanentResult.message.attachments[0].url;
+            console.log('✅ Получено постоянное вложение:', permanentUrl);
+            
+            // Обновляем URL в активной задаче
+            const task = activeTasks.get(taskId);
+            if (task) {
+              task.image_url = permanentUrl;
+              activeTasks.set(taskId, task);
+            }
+            
+            // Обновляем URL в истории
+            const historyIndex = history.length - 1;
+            if (historyIndex >= 0) {
+              history[historyIndex].imageUrl = permanentUrl;
+              generationHistory.set(apiKey, history);
+            }
+          }
         }
         
       } catch (error) {
@@ -593,6 +611,37 @@ function generateSuperProperties() {
   return Buffer.from(JSON.stringify(properties)).toString('base64');
 }
 
+// Ожидание постоянного вложения вместо временного
+async function waitForPermanentAttachment(channelId, salaiToken, messageId, maxAttempts = 10) {
+  console.log(`⏳ Ожидаем постоянное вложение для сообщения ${messageId}`);
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    await new Promise(resolve => setTimeout(resolve, 3000));
+    try {
+      const response = await fetch(`https://discord.com/api/v9/channels/${channelId}/messages/${messageId}`, {
+        headers: {
+          'Authorization': salaiToken,
+          'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) discord/0.0.309 Chrome/120.0.6099.291 Electron/28.2.10 Safari/537.36'
+        }
+      });
+      
+      if (response.ok) {
+        const message = await response.json();
+        if (message.attachments && message.attachments.length > 0) {
+          const attachment = message.attachments[0];
+          // Проверяем, что вложение не временное
+          if (!attachment.url.includes('ephemeral')) {
+            console.log('✅ Найдено постоянное вложение!');
+            return { success: true, message: message };
+          }
+        }
+      }
+    } catch (error) {
+      console.error(`Попытка ${attempt + 1}: ${error.message}`);
+    }
+  }
+  return { success: false, error: 'Timeout waiting for permanent attachment' };
+}
+
 // Ожидание результата upscale
 async function waitForUpscaleResult(channelId, salaiToken, originalMessageId, index, maxAttempts = 30) {
   console.log(`⏳ Ожидаем результат upscale для сообщения ${originalMessageId}, картинка ${index}`);
@@ -633,6 +682,21 @@ async function customUpscale(messageId, index, hash, user) {
     channelId: user.channelId,
     userEmail: user.userEmail
   });
+  
+  // Сначала проверяем, что сообщение существует и имеет постоянное вложение
+  try {
+    console.log('🔍 Проверяем наличие постоянного вложения...');
+    const permanentCheck = await waitForPermanentAttachment(user.channelId, user.salaiToken, messageId);
+    
+    if (!permanentCheck.success) {
+      throw new Error('Message has ephemeral attachment. Please wait a few seconds and try again.');
+    }
+    
+    console.log('✅ Сообщение имеет постоянное вложение');
+  } catch (error) {
+    console.error('❌ Ошибка проверки вложения:', error);
+    throw new Error('Failed to verify message attachment. The message might still have temporary content.');
+  }
   
   const customId = `MJ::JOB::upsample::${index}::${hash}`;
   const nonce = generateNonce();
@@ -823,6 +887,23 @@ app.post('/api/upscale', validateApiKey, async (req, res) => {
     console.log('⏳ Ждем 1 секунду перед upscale...');
     await new Promise(resolve => setTimeout(resolve, 1000));
     
+    // Проверяем, не является ли URL временным
+    if (imageUrl.includes('ephemeral')) {
+      console.log('⚠️ Обнаружено временное вложение, ждем дополнительно...');
+      await new Promise(resolve => setTimeout(resolve, 5000));
+      
+      // Пытаемся получить обновленную информацию о задаче
+      const updatedTask = activeTasks.get(`task_${task_id}`) || 
+                         Array.from(activeTasks.values()).find(t => t.midjourney_id === task_id);
+      
+      if (updatedTask && updatedTask.image_url && !updatedTask.image_url.includes('ephemeral')) {
+        imageUrl = updatedTask.image_url;
+        const newHashMatch = imageUrl.match(/([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})/);
+        hash = newHashMatch ? newHashMatch[1] : hash;
+        console.log('✅ Получен обновленный постоянный URL');
+      }
+    }
+    
     try {
       const result = await customUpscale(task_id, idx, hash, user);
       
@@ -927,8 +1008,13 @@ app.post('/api/upscale', validateApiKey, async (req, res) => {
         suggestions: [
           'Убедитесь, что с момента генерации прошло менее 15 минут',
           'Проверьте правильность task_id',
+          'Если получено временное вложение, подождите 10-15 секунд',
           'Попробуйте сгенерировать изображение заново'
-        ]
+        ],
+        debug: {
+          ephemeral: imageUrl.includes('ephemeral'),
+          messageAge: messageAge > 0 ? `${Math.floor(messageAge / 60000)} минут` : 'неизвестно'
+        }
       });
     }
     
@@ -953,7 +1039,7 @@ app.get('/admin', (req, res) => {
 app.get('/', (req, res) => {
   res.json({
     name: 'Midjourney API Service',
-    version: '2.1.1',
+    version: '2.1.2',
     endpoints: {
       health: '/health',
       admin: '/admin',
@@ -966,7 +1052,8 @@ app.get('/', (req, res) => {
     },
     changes: {
       '2.1.0': 'Добавлена асинхронная генерация с проверкой статуса',
-      '2.1.1': 'Исправлена проблема с upscale - добавлены правильные headers и проверка возраста кнопок'
+      '2.1.1': 'Исправлена проблема с upscale - добавлены правильные headers и проверка возраста кнопок',
+      '2.1.2': 'Добавлена обработка временных вложений (ephemeral) и ожидание постоянных URL'
     }
   });
 });
