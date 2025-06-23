@@ -558,11 +558,39 @@ app.get('/api/tasks', validateApiKey, (req, res) => {
 
 // Генерация nonce как в Discord
 function generateNonce() {
-  const timestamp = Date.now() - 1420070400000;
-  const workerId = Math.floor(Math.random() * 1024);
-  const processId = Math.floor(Math.random() * 16384);
-  const counter = Math.floor(Math.random() * 4096);
-  return ((timestamp * 524288) + (workerId * 16384) + processId * 4096 + counter).toString();
+  const timestamp = Date.now();
+  return timestamp.toString();
+}
+
+// Генерация session ID
+function generateSessionId() {
+  const hex = 'abcdef0123456789';
+  let result = '';
+  for (let i = 0; i < 32; i++) {
+    result += hex[Math.floor(Math.random() * hex.length)];
+  }
+  return result;
+}
+
+// Генерация правильного X-Super-Properties
+function generateSuperProperties() {
+  const properties = {
+    os: "Mac OS X",
+    browser: "Discord Client",
+    release_channel: "stable",
+    client_version: "0.0.309",
+    os_version: "23.2.0",
+    os_arch: "arm64",
+    app_arch: "arm64",
+    system_locale: "en-US",
+    browser_user_agent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) discord/0.0.309 Chrome/120.0.6099.291 Electron/28.2.10 Safari/537.36",
+    browser_version: "28.2.10",
+    client_build_number: 306178,
+    native_build_number: 50968,
+    client_event_source: null
+  };
+  
+  return Buffer.from(JSON.stringify(properties)).toString('base64');
 }
 
 // Ожидание результата upscale
@@ -574,7 +602,7 @@ async function waitForUpscaleResult(channelId, salaiToken, originalMessageId, in
       const response = await fetch(`https://discord.com/api/v9/channels/${channelId}/messages?limit=50`, {
         headers: {
           'Authorization': salaiToken,
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+          'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) discord/0.0.309 Chrome/120.0.6099.291 Electron/28.2.10 Safari/537.36'
         }
       });
       if (!response.ok) continue;
@@ -594,7 +622,7 @@ async function waitForUpscaleResult(channelId, salaiToken, originalMessageId, in
   return { success: false, error: 'Timeout waiting for upscale result' };
 }
 
-// Собственная реализация upscale через Discord API
+// Исправленная функция upscale
 async function customUpscale(messageId, index, hash, user) {
   console.log('🚀 Используем собственную реализацию upscale');
   console.log('📋 Параметры upscale:', {
@@ -606,49 +634,19 @@ async function customUpscale(messageId, index, hash, user) {
     userEmail: user.userEmail
   });
   
-  // Проверяем существование сообщения
-  try {
-    const checkUrl = `https://discord.com/api/v9/channels/${user.channelId}/messages/${messageId}`;
-    console.log(`🔍 Проверяем сообщение: ${checkUrl}`);
-    
-    const checkResponse = await fetch(checkUrl, {
-      headers: {
-        'Authorization': user.salaiToken,
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-      }
-    });
-    
-    if (!checkResponse.ok) {
-      const errorText = await checkResponse.text();
-      console.error(`❌ Сообщение ${messageId} не найдено в канале ${user.channelId}`);
-      console.error(`Ответ Discord: ${checkResponse.status} - ${errorText}`);
-      throw new Error(`Message ${messageId} not found in channel ${user.channelId}`);
-    }
-    
-    const message = await checkResponse.json();
-    console.log('✅ Сообщение найдено:', {
-      id: message.id,
-      author: message.author?.username,
-      hasComponents: !!message.components
-    });
-    
-  } catch (error) {
-    console.error('❌ Ошибка проверки сообщения:', error);
-    // Продолжаем выполнение, так как сообщение может быть доступно для interaction
-  }
-  
   const customId = `MJ::JOB::upsample::${index}::${hash}`;
   const nonce = generateNonce();
+  const sessionId = generateSessionId();
   
   const payload = {
     type: 3,
-    nonce,
+    nonce: nonce,
     guild_id: user.serverId,
     channel_id: user.channelId,
     message_flags: 0,
     message_id: messageId,
     application_id: '936929561302675456',
-    session_id: 'cb06f61453064c0983f2adae2a88c223',
+    session_id: sessionId,
     data: { 
       component_type: 2, 
       custom_id: customId 
@@ -660,6 +658,7 @@ async function customUpscale(messageId, index, hash, user) {
     index, 
     customId, 
     nonce,
+    sessionId,
     guildId: user.serverId,
     channelId: user.channelId
   });
@@ -670,20 +669,23 @@ async function customUpscale(messageId, index, hash, user) {
       headers: {
         'Authorization': user.salaiToken,
         'Content-Type': 'application/json',
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) discord/0.0.309 Chrome/120.0.6099.291 Electron/28.2.10 Safari/537.36',
         'Accept': '*/*',
         'Accept-Language': 'en-US,en;q=0.9',
+        'Cache-Control': 'no-cache',
         'Origin': 'https://discord.com',
+        'Pragma': 'no-cache',
         'Referer': `https://discord.com/channels/${user.serverId}/${user.channelId}`,
         'Sec-Ch-Ua': '"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"',
         'Sec-Ch-Ua-Mobile': '?0',
-        'Sec-Ch-Ua-Platform': '"Windows"',
+        'Sec-Ch-Ua-Platform': '"macOS"',
         'Sec-Fetch-Dest': 'empty',
         'Sec-Fetch-Mode': 'cors',
         'Sec-Fetch-Site': 'same-origin',
         'X-Debug-Options': 'bugReporterEnabled',
         'X-Discord-Locale': 'en-US',
-        'X-Discord-Timezone': 'Europe/Moscow'
+        'X-Discord-Timezone': 'Europe/Moscow',
+        'X-Super-Properties': generateSuperProperties()
       },
       body: JSON.stringify(payload)
     });
@@ -707,9 +709,23 @@ async function customUpscale(messageId, index, hash, user) {
       throw new Error(result.error || 'Failed to get upscale result');
     } else if (statusCode === 400) {
       const errorData = responseText ? JSON.parse(responseText) : {};
+      console.error('❌ Bad Request:', errorData);
+      
+      // Если кнопка истекла, даем более понятную ошибку
+      if (errorData.code === 50035) {
+        throw new Error('Button expired. Discord buttons are only valid for 15 minutes after generation.');
+      }
+      
       throw new Error(`Bad Request: ${errorData.message || responseText}`);
     } else if (statusCode === 401) {
       throw new Error('Unauthorized: Check your Discord token');
+    } else if (statusCode === 403) {
+      // Обработка специфичной ошибки Discord
+      const errorData = responseText ? JSON.parse(responseText) : {};
+      if (errorData.code === 20002) {
+        throw new Error('This endpoint can only be used by bots. Please check your Discord configuration.');
+      }
+      throw new Error(`Forbidden: ${errorData.message || responseText}`);
     } else if (statusCode === 404) {
       throw new Error('Message not found or button expired. Try generating a new image.');
     } else {
@@ -719,6 +735,13 @@ async function customUpscale(messageId, index, hash, user) {
     console.error('❌ Ошибка customUpscale:', error);
     throw error;
   }
+}
+
+// Проверка возраста сообщения Discord
+function getTimestampFromSnowflake(snowflake) {
+  const DISCORD_EPOCH = 1420070400000;
+  const timestamp = Number((BigInt(snowflake) >> 22n)) + DISCORD_EPOCH;
+  return timestamp;
 }
 
 // USER: Upscale изображения с поддержкой бинарного вывода
@@ -747,6 +770,18 @@ app.post('/api/upscale', validateApiKey, async (req, res) => {
     }
     
     console.log(`🔍 Upscale для ${user.userEmail}: задача ${task_id}, картинка ${idx}`);
+    
+    // Проверяем возраст сообщения
+    const messageAge = Date.now() - getTimestampFromSnowflake(task_id);
+    const MAX_AGE = 15 * 60 * 1000; // 15 минут
+    
+    if (messageAge > MAX_AGE) {
+      return res.status(400).json({
+        error: 'Button expired. Discord buttons are only valid for 15 minutes after generation.',
+        age_minutes: Math.floor(messageAge / 60000),
+        max_age_minutes: 15
+      });
+    }
     
     // Проверяем в активных задачах
     const activeTask = Array.from(activeTasks.values()).find(task => 
@@ -784,9 +819,9 @@ app.post('/api/upscale', validateApiKey, async (req, res) => {
     console.log(`📌 Извлечен hash: ${hash}`);
     console.log(`🔗 URL изображения: ${imageUrl}`);
     
-    // Добавляем задержку перед upscale
-    console.log('⏳ Ждем 3 секунды перед upscale...');
-    await new Promise(resolve => setTimeout(resolve, 100));
+    // Добавляем небольшую задержку
+    console.log('⏳ Ждем 1 секунду перед upscale...');
+    await new Promise(resolve => setTimeout(resolve, 1000));
     
     try {
       const result = await customUpscale(task_id, idx, hash, user);
@@ -885,18 +920,15 @@ app.post('/api/upscale', validateApiKey, async (req, res) => {
     } catch (upscaleError) {
       console.error('❌ Ошибка при выполнении upscale:', upscaleError.message);
       
-      // Возвращаем ошибку, но с информацией для отладки
-      return res.status(500).json({
+      // Возвращаем ошибку с полезной информацией
+      return res.status(400).json({
         success: false,
         error: upscaleError.message,
-        debug: {
-          task_id: task_id,
-          index: idx,
-          hash: hash,
-          imageUrl: imageUrl,
-          user: user.userEmail
-        },
-        suggestion: 'Попробуйте еще раз через несколько секунд'
+        suggestions: [
+          'Убедитесь, что с момента генерации прошло менее 15 минут',
+          'Проверьте правильность task_id',
+          'Попробуйте сгенерировать изображение заново'
+        ]
       });
     }
     
@@ -921,7 +953,7 @@ app.get('/admin', (req, res) => {
 app.get('/', (req, res) => {
   res.json({
     name: 'Midjourney API Service',
-    version: '2.1.0',
+    version: '2.1.1',
     endpoints: {
       health: '/health',
       admin: '/admin',
@@ -933,7 +965,8 @@ app.get('/', (req, res) => {
       }
     },
     changes: {
-      '2.1.0': 'Добавлена асинхронная генерация с проверкой статуса'
+      '2.1.0': 'Добавлена асинхронная генерация с проверкой статуса',
+      '2.1.1': 'Исправлена проблема с upscale - добавлены правильные headers и проверка возраста кнопок'
     }
   });
 });
