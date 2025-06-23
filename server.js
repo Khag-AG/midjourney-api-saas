@@ -462,6 +462,7 @@ app.post('/api/generate', validateApiKey, async (req, res) => {
         generationHistory.set(apiKey, history);
         
         console.log(`✅ Генерация завершена: ${taskId} -> ${result.id}`);
+        console.log(`📎 Тип вложения: ${result.uri.includes('ephemeral') ? 'ВРЕМЕННОЕ' : 'ПОСТОЯННОЕ'}`);
         
       } catch (error) {
         console.error(`❌ Ошибка генерации для ${taskId}:`, error.message);
@@ -778,7 +779,7 @@ app.post('/api/upscale', validateApiKey, async (req, res) => {
     
     // Добавляем задержку перед upscale
     console.log('⏳ Ждем 3 секунды перед upscale...');
-    await new Promise(resolve => setTimeout(resolve, 3000));
+    await new Promise(resolve => setTimeout(resolve, 100));
     
     try {
       const result = await customUpscale(task_id, idx, hash, user);
