@@ -1,4 +1,4 @@
-// server.js - Супер продвинутая версия с асинхронной генерацией
+// server.js - Супер продвинутая версия с асинхронной генерацией и полной генерацией
 const express = require('express');
 const { Midjourney } = require('midjourney');
 const fs = require('fs').promises;
@@ -62,6 +62,7 @@ class FileDB {
 const users = new FileDB('users.json');
 const userUsage = new FileDB('usage.json');
 const generationHistory = new FileDB('history.json');
+const fullGenerations = new FileDB('full_generations.json');
 const userSessions = new Map();
 
 // Инициализация
@@ -70,6 +71,7 @@ async function init() {
   await users.load();
   await userUsage.load();
   await generationHistory.load();
+  await fullGenerations.load();
   console.log(`📊 Загружено ${users.size} пользователей из базы данных`);
 }
 
@@ -1060,6 +1062,441 @@ app.post('/api/upscale', validateApiKey, async (req, res) => {
   }
 });
 
+// USER: Полная генерация с автоматическим upscale всех вариантов
+app.post('/api/generate-full', validateApiKey, async (req, res) => {
+  try {
+    const { 
+      prompt, 
+      upscale_all = true, 
+      upscale_indexes = [1, 2, 3, 4],
+      wait_before_upscale = 5000, // Задержка перед upscale в мс
+      parallel_upscale = true // Параллельный или последовательный upscale
+    } = req.body;
+    
+    const { user, apiKey } = req;
+    
+    if (!prompt) {
+      return res.status(400).json({
+        error: 'Параметр prompt обязателен',
+        example: { 
+          prompt: 'beautiful sunset over mountains',
+          upscale_all: true,
+          upscale_indexes: [1, 2, 3, 4]
+        }
+      });
+    }
+    
+    console.log(`🎨 ПОЛНАЯ генерация для ${user.userEmail}: "${prompt}"`);
+    console.log(`📋 Параметры: upscale_all=${upscale_all}, indexes=${upscale_indexes}, parallel=${parallel_upscale}`);
+    
+    // Генерируем уникальный ID для полной генерации
+    const fullGenId = 'full_' + Date.now() + '_' + Math.random().toString(36).substring(7);
+    
+    // Сохраняем начальный статус
+    const fullGeneration = {
+      id: fullGenId,
+      prompt: prompt,
+      status: 'generating',
+      userEmail: user.userEmail,
+      apiKey: apiKey,
+      startedAt: new Date().toISOString(),
+      original: null,
+      upscaled: []
+    };
+    
+    fullGenerations.set(fullGenId, fullGeneration);
+    
+    // Сразу возвращаем ID полной генерации
+    res.json({
+      success: true,
+      full_generation_id: fullGenId,
+      status: 'processing',
+      message: 'Полная генерация запущена. Используйте /api/generate-full/{id} для проверки статуса.'
+    });
+    
+    // Запускаем генерацию в фоне
+    (async () => {
+      try {
+        // Шаг 1: Генерация исходного изображения
+        console.log('📸 Шаг 1: Генерация исходного изображения...');
+        
+        let client = userSessions.get(apiKey);
+        if (!client) {
+          client = await getMidjourneyClient(user);
+          userSessions.set(apiKey, client);
+        }
+        
+        const generateResult = await client.Imagine(prompt, (uri, progress) => {
+          console.log(`${user.userEmail} - Генерация прогресс: ${progress}%`);
+          const gen = fullGenerations.get(fullGenId);
+          if (gen) {
+            gen.progress = progress;
+            fullGenerations.set(fullGenId, gen);
+          }
+        });
+        
+        console.log(`✅ Изображение сгенерировано. ID: ${generateResult.id}`);
+        
+        // Обновляем статус с результатом генерации
+        fullGeneration.original = {
+          midjourney_id: generateResult.id,
+          image_url: generateResult.uri,
+          hash: generateResult.hash || extractHashFromUrl(generateResult.uri),
+          generated_at: new Date().toISOString()
+        };
+        fullGeneration.status = 'generated';
+        fullGenerations.set(fullGenId, fullGeneration);
+        
+        // Обновляем счетчики использования
+        if (user.role !== 'admin') {
+          let currentUsage = userUsage.get(apiKey) || { count: 0, resetDate: new Date() };
+          currentUsage.count += 1;
+          userUsage.set(apiKey, currentUsage);
+        }
+        
+        // Добавляем в историю
+        const historyItem = {
+          action: 'full_generation',
+          fullGenId: fullGenId,
+          prompt: prompt,
+          originalImageUrl: generateResult.uri,
+          taskId: generateResult.id,
+          hash: generateResult.hash || extractHashFromUrl(generateResult.uri),
+          timestamp: new Date().toISOString()
+        };
+        
+        const history = generationHistory.get(apiKey) || [];
+        history.push(historyItem);
+        generationHistory.set(apiKey, history);
+        
+        // Проверяем и ждем постоянное вложение если нужно
+        let finalImageUrl = generateResult.uri;
+        if (generateResult.uri.includes('ephemeral')) {
+          console.log('⚠️ Обнаружено временное вложение, ждем постоянное...');
+          
+          for (let i = 0; i < 15; i++) {
+            await new Promise(resolve => setTimeout(resolve, 3000));
+            
+            try {
+              const checkResponse = await fetch(`https://discord.com/api/v9/channels/${user.channelId}/messages/${generateResult.id}`, {
+                headers: {
+                  'Authorization': user.salaiToken,
+                  'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36'
+                }
+              });
+              
+              if (checkResponse.ok) {
+                const message = await checkResponse.json();
+                if (message.attachments && message.attachments.length > 0) {
+                  const attachment = message.attachments[0];
+                  if (!attachment.url.includes('ephemeral')) {
+                    console.log('✅ Получено постоянное вложение!');
+                    finalImageUrl = attachment.url;
+                    fullGeneration.original.image_url = finalImageUrl;
+                    fullGenerations.set(fullGenId, fullGeneration);
+                    break;
+                  }
+                }
+              }
+            } catch (error) {
+              console.log(`Попытка ${i + 1}/15 получить постоянное вложение...`);
+            }
+          }
+        }
+        
+        // Шаг 2: Upscale всех вариантов если нужно
+        if (upscale_all && upscale_indexes.length > 0) {
+          console.log(`🔍 Шаг 2: Upscale вариантов [${upscale_indexes.join(', ')}]...`);
+          console.log(`⏳ Ждем ${wait_before_upscale}мс перед началом upscale...`);
+          
+          fullGeneration.status = 'upscaling';
+          fullGenerations.set(fullGenId, fullGeneration);
+          
+          await new Promise(resolve => setTimeout(resolve, wait_before_upscale));
+          
+          if (parallel_upscale) {
+            // Параллельный upscale
+            console.log('🚀 Запускаем параллельный upscale...');
+            
+            const upscalePromises = upscale_indexes.map(async (index) => {
+              try {
+                console.log(`  📐 Начинаем upscale варианта ${index}...`);
+                
+                // Небольшая случайная задержка чтобы не спамить Discord
+                await new Promise(resolve => setTimeout(resolve, Math.random() * 2000));
+                
+                const upscaleResult = await client.Upscale({
+                  index: index,
+                  msgId: generateResult.id,
+                  hash: fullGeneration.original.hash,
+                  flags: 0,
+                  loading: (uri, progress) => {
+                    console.log(`    Вариант ${index} прогресс: ${progress}%`);
+                  }
+                });
+                
+                if (upscaleResult && upscaleResult.uri) {
+                  console.log(`  ✅ Вариант ${index} успешно увеличен`);
+                  return {
+                    index: index,
+                    success: true,
+                    image_url: upscaleResult.uri,
+                    upscaled_at: new Date().toISOString()
+                  };
+                } else {
+                  throw new Error('No result from upscale');
+                }
+                
+              } catch (error) {
+                console.error(`  ❌ Ошибка upscale варианта ${index}:`, error.message);
+                
+                // Пробуем альтернативный метод
+                try {
+                  console.log(`  🔄 Пробуем альтернативный метод для варианта ${index}...`);
+                  const altResult = await customUpscale(
+                    generateResult.id, 
+                    index, 
+                    fullGeneration.original.hash, 
+                    user
+                  );
+                  
+                  if (altResult && altResult.uri) {
+                    console.log(`  ✅ Вариант ${index} увеличен альтернативным методом`);
+                    return {
+                      index: index,
+                      success: true,
+                      image_url: altResult.uri,
+                      upscaled_at: new Date().toISOString(),
+                      method: 'alternative'
+                    };
+                  }
+                } catch (altError) {
+                  console.error(`  ❌ Альтернативный метод тоже не сработал:`, altError.message);
+                }
+                
+                return {
+                  index: index,
+                  success: false,
+                  error: error.message
+                };
+              }
+            });
+            
+            // Ждем завершения всех upscale
+            const upscaleResults = await Promise.allSettled(upscalePromises);
+            
+            // Обрабатываем результаты
+            upscaleResults.forEach((promiseResult, idx) => {
+              if (promiseResult.status === 'fulfilled') {
+                fullGeneration.upscaled.push(promiseResult.value);
+              } else {
+                fullGeneration.upscaled.push({
+                  index: upscale_indexes[idx],
+                  success: false,
+                  error: promiseResult.reason?.message || 'Unknown error'
+                });
+              }
+            });
+            
+          } else {
+            // Последовательный upscale
+            console.log('📝 Запускаем последовательный upscale...');
+            
+            for (const index of upscale_indexes) {
+              try {
+                console.log(`  📐 Upscale варианта ${index}...`);
+                
+                const upscaleResult = await client.Upscale({
+                  index: index,
+                  msgId: generateResult.id,
+                  hash: fullGeneration.original.hash,
+                  flags: 0,
+                  loading: (uri, progress) => {
+                    console.log(`    Прогресс: ${progress}%`);
+                  }
+                });
+                
+                if (upscaleResult && upscaleResult.uri) {
+                  console.log(`  ✅ Вариант ${index} успешно увеличен`);
+                  fullGeneration.upscaled.push({
+                    index: index,
+                    success: true,
+                    image_url: upscaleResult.uri,
+                    upscaled_at: new Date().toISOString()
+                  });
+                } else {
+                  throw new Error('No result from upscale');
+                }
+                
+                // Задержка между upscale
+                if (index < upscale_indexes[upscale_indexes.length - 1]) {
+                  await new Promise(resolve => setTimeout(resolve, 3000));
+                }
+                
+              } catch (error) {
+                console.error(`  ❌ Ошибка upscale варианта ${index}:`, error.message);
+                fullGeneration.upscaled.push({
+                  index: index,
+                  success: false,
+                  error: error.message
+                });
+              }
+            }
+          }
+          
+          // Сортируем по индексу
+          fullGeneration.upscaled.sort((a, b) => a.index - b.index);
+        }
+        
+        // Финальный статус
+        fullGeneration.status = 'completed';
+        fullGeneration.completedAt = new Date().toISOString();
+        
+        // Добавляем статистику
+        fullGeneration.stats = {
+          total_images: 1 + fullGeneration.upscaled.filter(u => u.success).length,
+          successful_upscales: fullGeneration.upscaled.filter(u => u.success).length,
+          failed_upscales: fullGeneration.upscaled.filter(u => !u.success).length,
+          duration_seconds: Math.floor((new Date() - new Date(fullGeneration.startedAt)) / 1000)
+        };
+        
+        fullGenerations.set(fullGenId, fullGeneration);
+        
+        console.log(`✨ Полная генерация ${fullGenId} завершена!`);
+        console.log(`📊 Статистика: ${fullGeneration.stats.total_images} изображений, ${fullGeneration.stats.successful_upscales} успешных upscale`);
+        
+      } catch (error) {
+        console.error(`❌ Ошибка полной генерации ${fullGenId}:`, error.message);
+        
+        fullGeneration.status = 'failed';
+        fullGeneration.error = error.message;
+        fullGeneration.failedAt = new Date().toISOString();
+        fullGenerations.set(fullGenId, fullGeneration);
+      }
+    })();
+    
+  } catch (error) {
+    console.error('❌ Ошибка запуска полной генерации:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+// USER: Получение статуса полной генерации
+app.get('/api/generate-full/:fullGenId', validateApiKey, (req, res) => {
+  try {
+    const { fullGenId } = req.params;
+    const { user, apiKey } = req;
+    
+    const fullGeneration = fullGenerations.get(fullGenId);
+    
+    if (!fullGeneration) {
+      return res.status(404).json({
+        error: 'Полная генерация не найдена',
+        full_generation_id: fullGenId
+      });
+    }
+    
+    // Проверяем доступ
+    if (fullGeneration.apiKey !== apiKey && user.role !== 'admin') {
+      return res.status(403).json({
+        error: 'Доступ запрещен'
+      });
+    }
+    
+    // Формируем ответ
+    const response = {
+      success: true,
+      full_generation_id: fullGenId,
+      status: fullGeneration.status,
+      prompt: fullGeneration.prompt
+    };
+    
+    // Добавляем прогресс если идет генерация
+    if (fullGeneration.status === 'generating' && fullGeneration.progress !== undefined) {
+      response.progress = fullGeneration.progress;
+    }
+    
+    // Добавляем оригинал если есть
+    if (fullGeneration.original) {
+      response.original = {
+        prompt: fullGeneration.prompt,
+        image_url: fullGeneration.original.image_url,
+        midjourney_id: fullGeneration.original.midjourney_id
+      };
+    }
+    
+    // Добавляем upscaled если есть
+    if (fullGeneration.upscaled && fullGeneration.upscaled.length > 0) {
+      response.upscaled = fullGeneration.upscaled;
+    }
+    
+    // Добавляем статистику если завершено
+    if (fullGeneration.status === 'completed' && fullGeneration.stats) {
+      response.stats = fullGeneration.stats;
+    }
+    
+    // Добавляем ошибку если есть
+    if (fullGeneration.error) {
+      response.error = fullGeneration.error;
+    }
+    
+    res.json(response);
+    
+  } catch (error) {
+    console.error('Ошибка получения статуса полной генерации:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+// ADMIN: Список всех полных генераций
+app.get('/api/generate-full', validateApiKey, (req, res) => {
+  if (req.user.role !== 'admin') {
+    // Для обычных пользователей показываем только их генерации
+    const userGenerations = Array.from(fullGenerations.entries())
+      .filter(([_, gen]) => gen.apiKey === req.apiKey)
+      .map(([id, gen]) => ({
+        full_generation_id: id,
+        prompt: gen.prompt,
+        status: gen.status,
+        total_images: gen.stats?.total_images || 0,
+        created_at: gen.startedAt,
+        completed_at: gen.completedAt
+      }));
+    
+    return res.json({
+      generations: userGenerations,
+      total: userGenerations.length
+    });
+  }
+  
+  // Для админов показываем все
+  const allGenerations = Array.from(fullGenerations.entries())
+    .map(([id, gen]) => ({
+      full_generation_id: id,
+      user: gen.userEmail,
+      prompt: gen.prompt,
+      status: gen.status,
+      total_images: gen.stats?.total_images || 0,
+      successful_upscales: gen.stats?.successful_upscales || 0,
+      duration_seconds: gen.stats?.duration_seconds || 0,
+      created_at: gen.startedAt,
+      completed_at: gen.completedAt
+    }));
+  
+  allGenerations.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+  
+  res.json({
+    generations: allGenerations.slice(0, 100),
+    total: allGenerations.length
+  });
+});
+
 // Админ панель (HTML интерфейс)
 app.get('/admin', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'admin.html'));
@@ -1069,7 +1506,7 @@ app.get('/admin', (req, res) => {
 app.get('/', (req, res) => {
   res.json({
     name: 'Midjourney API Service',
-    version: '2.1.5',
+    version: '2.2.0',
     endpoints: {
       health: '/health',
       admin: '/admin',
@@ -1077,7 +1514,10 @@ app.get('/', (req, res) => {
         generate: 'POST /api/generate (async)',
         status: 'GET /api/task/:taskId',
         tasks: 'GET /api/tasks (admin only)',
-        upscale: 'POST /api/upscale'
+        upscale: 'POST /api/upscale',
+        generateFull: 'POST /api/generate-full (with auto upscale)',
+        generateFullStatus: 'GET /api/generate-full/:fullGenId',
+        generateFullList: 'GET /api/generate-full'
       }
     },
     changes: {
@@ -1086,7 +1526,8 @@ app.get('/', (req, res) => {
       '2.1.2': 'Добавлена обработка временных вложений (ephemeral) и ожидание постоянных URL',
       '2.1.3': 'Упрощена логика upscale - работаем с временными вложениями напрямую',
       '2.1.4': 'Добавлено ожидание преобразования временных вложений в постоянные',
-      '2.1.5': 'Использование встроенного метода Midjourney для upscale'
+      '2.1.5': 'Использование встроенного метода Midjourney для upscale',
+      '2.2.0': 'Добавлен endpoint для полной генерации с автоматическим upscale всех вариантов'
     }
   });
 });
@@ -1102,6 +1543,7 @@ init().then(() => {
     console.log(`🎨 API генерации: POST http://localhost:${PORT}/api/generate`);
     console.log(`📍 API статуса: GET http://localhost:${PORT}/api/task/:taskId`);
     console.log(`🔍 API upscale: POST http://localhost:${PORT}/api/upscale`);
+    console.log(`✨ API полной генерации: POST http://localhost:${PORT}/api/generate-full`);
     console.log(`🌍 Среда: ${process.env.NODE_ENV || 'development'}`);
   });
   
