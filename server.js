@@ -464,7 +464,54 @@ app.post('/api/generate', validateApiKey, async (req, res) => {
         console.log(`✅ Генерация завершена: ${taskId} -> ${result.id}`);
         console.log(`📎 Тип вложения: ${result.uri.includes('ephemeral') ? 'ВРЕМЕННОЕ' : 'ПОСТОЯННОЕ'}`);
 
-        // Временные вложения тоже подходят для upscale
+        // Если временное вложение, ждем появления постоянного
+        if (result.uri.includes('ephemeral')) {
+          console.log('⚠️ Получено временное вложение, ждем постоянное...');
+          
+          // Ждем до 30 секунд для получения постоянного вложения
+          for (let i = 0; i < 10; i++) {
+            await new Promise(resolve => setTimeout(resolve, 3000));
+            
+            try {
+              const checkResponse = await fetch(`https://discord.com/api/v9/channels/${user.channelId}/messages/${result.id}`, {
+                headers: {
+                  'Authorization': user.salaiToken,
+                  'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36'
+                }
+              });
+              
+              if (checkResponse.ok) {
+                const message = await checkResponse.json();
+                if (message.attachments && message.attachments.length > 0) {
+                  const attachment = message.attachments[0];
+                  if (!attachment.url.includes('ephemeral')) {
+                    console.log('✅ Получено постоянное вложение!');
+                    result.uri = attachment.url;
+                    
+                    // Обновляем в активной задаче
+                    const task = activeTasks.get(taskId);
+                    if (task) {
+                      task.image_url = attachment.url;
+                      activeTasks.set(taskId, task);
+                    }
+                    
+                    // Обновляем в истории
+                    const historyIndex = history.length - 1;
+                    if (historyIndex >= 0) {
+                      history[historyIndex].imageUrl = attachment.url;
+                      generationHistory.set(apiKey, history);
+                    }
+                    
+                    break;
+                  }
+                }
+              }
+            } catch (error) {
+              console.log(`Попытка ${i + 1}/10 получить постоянное вложение...`);
+            }
+          }
+        }
+
         console.log('✅ Изображение готово для upscale');
         
       } catch (error) {
@@ -518,6 +565,7 @@ app.get('/api/task/:taskId', validateApiKey, (req, res) => {
     response.image_url = task.image_url;
     response.midjourney_id = task.midjourney_id;
     response.task_id = task.midjourney_id;  // Для совместимости с upscale
+    response.is_ephemeral = task.image_url && task.image_url.includes('ephemeral');
     
     // Удаляем выполненную задачу через 5 минут
     setTimeout(() => {
@@ -627,7 +675,7 @@ async function waitForUpscaleResult(channelId, salaiToken, originalMessageId, in
   return { success: false, error: 'Timeout waiting for upscale result' };
 }
 
-// Исправленная функция upscale - работаем с временными вложениями
+// Исправленная функция upscale с поддержкой временных вложений
 async function customUpscale(messageId, index, hash, user) {
   console.log('🚀 Используем собственную реализацию upscale');
   console.log('📋 Параметры upscale:', {
@@ -639,112 +687,98 @@ async function customUpscale(messageId, index, hash, user) {
     userEmail: user.userEmail
   });
   
-  // Убираем проверку постоянного вложения - работаем с временными
+  // Для временных вложений нужен особый подход
+  // Пробуем несколько вариантов custom_id
+  const customIds = [
+    `MJ::JOB::upsample::${index}::${hash}`,
+    `MJ::JOB::upsample_v2::${index}::${hash}`,
+    `MJ::JOB::high_variation::${index}::${hash}`
+  ];
   
-  const customId = `MJ::JOB::upsample::${index}::${hash}`;
-  const nonce = generateNonce();
-  const sessionId = generateSessionId();
+  let lastError = null;
   
-  const payload = {
-    type: 3,
-    nonce: nonce,
-    guild_id: user.serverId,
-    channel_id: user.channelId,
-    message_flags: 0,
-    message_id: messageId,
-    application_id: '936929561302675456',
-    session_id: sessionId,
-    data: { 
-      component_type: 2, 
-      custom_id: customId 
+  for (const customId of customIds) {
+    const nonce = generateNonce();
+    const sessionId = generateSessionId();
+    
+    const payload = {
+      type: 3,
+      nonce: nonce,
+      guild_id: user.serverId,
+      channel_id: user.channelId,
+      message_flags: 0,
+      message_id: messageId,
+      application_id: '936929561302675456',
+      session_id: sessionId,
+      data: { 
+        component_type: 2, 
+        custom_id: customId 
+      }
+    };
+
+    console.log('📤 Пробуем custom_id:', customId);
+    
+    try {
+      const response = await fetch('https://discord.com/api/v9/interactions', {
+        method: 'POST',
+        headers: {
+          'Authorization': user.salaiToken,
+          'Content-Type': 'application/json',
+          'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) discord/0.0.309 Chrome/120.0.6099.291 Electron/28.2.10 Safari/537.36',
+          'Accept': '*/*',
+          'Accept-Language': 'en-US,en;q=0.9',
+          'Cache-Control': 'no-cache',
+          'Origin': 'https://discord.com',
+          'Pragma': 'no-cache',
+          'Referer': `https://discord.com/channels/${user.serverId}/${user.channelId}`,
+          'Sec-Ch-Ua': '"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"',
+          'Sec-Ch-Ua-Mobile': '?0',
+          'Sec-Ch-Ua-Platform': '"macOS"',
+          'Sec-Fetch-Dest': 'empty',
+          'Sec-Fetch-Mode': 'cors',
+          'Sec-Fetch-Site': 'same-origin',
+          'X-Debug-Options': 'bugReporterEnabled',
+          'X-Discord-Locale': 'en-US',
+          'X-Discord-Timezone': 'Europe/Moscow',
+          'X-Super-Properties': generateSuperProperties()
+        },
+        body: JSON.stringify(payload)
+      });
+
+      const statusCode = response.status;
+      const responseText = await response.text();
+      console.log(`📥 Discord ответ: ${statusCode}`);
+      
+      if (statusCode === 204) {
+        console.log('✅ Команда upscale принята Discord!');
+        
+        // Увеличиваем время ожидания результата
+        const result = await waitForUpscaleResult(user.channelId, user.salaiToken, messageId, index, 45);
+        
+        if (result.success) {
+          return { 
+            uri: result.url, 
+            proxy_url: result.proxy_url, 
+            success: true,
+            message_id: result.message_id
+          };
+        }
+        throw new Error(result.error || 'Failed to get upscale result');
+      } else if (statusCode === 404) {
+        lastError = 'Message not found';
+        continue; // Пробуем следующий custom_id
+      } else {
+        lastError = `Discord API error: ${statusCode} - ${responseText}`;
+        continue;
+      }
+    } catch (error) {
+      lastError = error.message;
+      continue;
     }
-  };
-
-  console.log('📤 Отправляем запрос на upscale:', { 
-    messageId, 
-    index, 
-    customId, 
-    nonce,
-    sessionId,
-    guildId: user.serverId,
-    channelId: user.channelId
-  });
-  
-  try {
-    const response = await fetch('https://discord.com/api/v9/interactions', {
-      method: 'POST',
-      headers: {
-        'Authorization': user.salaiToken,
-        'Content-Type': 'application/json',
-        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) discord/0.0.309 Chrome/120.0.6099.291 Electron/28.2.10 Safari/537.36',
-        'Accept': '*/*',
-        'Accept-Language': 'en-US,en;q=0.9',
-        'Cache-Control': 'no-cache',
-        'Origin': 'https://discord.com',
-        'Pragma': 'no-cache',
-        'Referer': `https://discord.com/channels/${user.serverId}/${user.channelId}`,
-        'Sec-Ch-Ua': '"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"',
-        'Sec-Ch-Ua-Mobile': '?0',
-        'Sec-Ch-Ua-Platform': '"macOS"',
-        'Sec-Fetch-Dest': 'empty',
-        'Sec-Fetch-Mode': 'cors',
-        'Sec-Fetch-Site': 'same-origin',
-        'X-Debug-Options': 'bugReporterEnabled',
-        'X-Discord-Locale': 'en-US',
-        'X-Discord-Timezone': 'Europe/Moscow',
-        'X-Super-Properties': generateSuperProperties()
-      },
-      body: JSON.stringify(payload)
-    });
-
-    const statusCode = response.status;
-    const responseText = await response.text();
-    console.log(`📥 Discord ответ: ${statusCode}`);
-    if (responseText) console.log('Response body:', responseText);
-
-    if (statusCode === 204) {
-      console.log('✅ Команда upscale принята Discord!');
-      
-      // Увеличиваем время ожидания результата
-      const result = await waitForUpscaleResult(user.channelId, user.salaiToken, messageId, index, 45); // 45 попыток = 90 секунд
-      
-      if (result.success) {
-        return { 
-          uri: result.url, 
-          proxy_url: result.proxy_url, 
-          success: true,
-          message_id: result.message_id
-        };
-      }
-      throw new Error(result.error || 'Failed to get upscale result');
-    } else if (statusCode === 400) {
-      const errorData = responseText ? JSON.parse(responseText) : {};
-      console.error('❌ Bad Request:', errorData);
-      
-      // Если кнопка истекла, даем более понятную ошибку
-      if (errorData.code === 50035) {
-        throw new Error('Button expired. Discord buttons are only valid for 15 minutes after generation.');
-      }
-      
-      throw new Error(`Bad Request: ${errorData.message || responseText}`);
-    } else if (statusCode === 401) {
-      throw new Error('Unauthorized: Check your Discord token');
-    } else if (statusCode === 403) {
-      // Обработка специфичной ошибки Discord
-      const errorData = responseText ? JSON.parse(responseText) : {};
-      if (errorData.code === 20002) {
-        throw new Error('This endpoint can only be used by bots. Please check your Discord configuration.');
-      }
-      throw new Error(`Forbidden: ${errorData.message || responseText}`);
-    } else if (statusCode === 404) {
-      throw new Error('Message not found or button expired. Try generating a new image.');
-    } else {
-      throw new Error(`Discord API error: ${statusCode} - ${responseText}`);
-    }
-  } catch (error) {
-    console.error('❌ Ошибка customUpscale:', error);
-    throw error;
   }
+  
+  // Если все попытки не удались
+  throw new Error(lastError || 'Failed to upscale with all custom_id variants');
 }
 
 // Проверка возраста сообщения Discord
@@ -829,9 +863,14 @@ app.post('/api/upscale', validateApiKey, async (req, res) => {
     console.log(`📌 Извлечен hash: ${hash}`);
     console.log(`🔗 URL изображения: ${imageUrl}`);
     
-    // Уменьшаем задержку перед upscale
-    console.log('⏳ Ждем 2 секунды перед upscale...');
-    await new Promise(resolve => setTimeout(resolve, 2000));
+    // Увеличиваем задержку для временных вложений
+    if (imageUrl.includes('ephemeral')) {
+      console.log('⚠️ Обнаружено временное вложение, увеличиваем задержку...');
+      await new Promise(resolve => setTimeout(resolve, 5000)); // 5 секунд для временных
+    } else {
+      console.log('⏳ Ждем 2 секунды перед upscale...');
+      await new Promise(resolve => setTimeout(resolve, 2000));
+    }
     
     try {
       const result = await customUpscale(task_id, idx, hash, user);
@@ -964,7 +1003,7 @@ app.get('/admin', (req, res) => {
 app.get('/', (req, res) => {
   res.json({
     name: 'Midjourney API Service',
-    version: '2.1.3',
+    version: '2.1.4',
     endpoints: {
       health: '/health',
       admin: '/admin',
@@ -979,7 +1018,8 @@ app.get('/', (req, res) => {
       '2.1.0': 'Добавлена асинхронная генерация с проверкой статуса',
       '2.1.1': 'Исправлена проблема с upscale - добавлены правильные headers и проверка возраста кнопок',
       '2.1.2': 'Добавлена обработка временных вложений (ephemeral) и ожидание постоянных URL',
-      '2.1.3': 'Упрощена логика upscale - работаем с временными вложениями напрямую'
+      '2.1.3': 'Упрощена логика upscale - работаем с временными вложениями напрямую',
+      '2.1.4': 'Добавлено ожидание преобразования временных вложений в постоянные'
     }
   });
 });
