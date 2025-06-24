@@ -226,56 +226,6 @@ app.post('/admin/users', async (req, res) => {
   
   console.log(`👤 Новый ${role} создан: ${userEmail}`);
   
-  if (req.query.wait === 'true') {
-  // Ждем завершения генерации
-  const startTime = Date.now();
-  const maxWaitTime = 240000; // 4 минуты
-  
-  // Функция для ожидания с проверкой
-  const waitForCompletion = async () => {
-    while (Date.now() - startTime < maxWaitTime) {
-      await new Promise(resolve => setTimeout(resolve, 2000)); // Ждем 2 секунды
-      
-      const currentStatus = fullGenerations.get(fullGenId);
-      
-      if (currentStatus && (currentStatus.status === 'completed' || currentStatus.status === 'failed')) {
-        return res.json({
-          success: currentStatus.status === 'completed',
-          full_generation_id: fullGenId,
-          status: currentStatus.status,
-          prompt: currentStatus.prompt,
-          original: currentStatus.original || {},
-          upscaled: currentStatus.upscaled || [],
-          stats: currentStatus.stats || {},
-          error: currentStatus.error
-        });
-      }
-    }
-    
-    // Если время вышло
-    const finalStatus = fullGenerations.get(fullGenId);
-    return res.json({
-      success: false,
-      full_generation_id: fullGenId,
-      status: 'timeout',
-      message: 'Generation is taking longer than expected. Use GET endpoint to check status.',
-      current_status: finalStatus ? finalStatus.status : 'unknown'
-    });
-  };
-  
-  // Запускаем ожидание
-  return waitForCompletion();
-  
-} else {
-  // Обычный ответ без ожидания (как было раньше)
-  res.json({
-    success: true,
-    full_generation_id: fullGenId,
-    status: 'processing',
-    message: 'Полная генерация запущена. Используйте /api/generate-full/{id} для проверки статуса.'
-  });
-}
-
   res.json({
     success: true,
     apiKey: apiKey,
@@ -1156,13 +1106,16 @@ app.post('/api/generate-full', validateApiKey, async (req, res) => {
     
     fullGenerations.set(fullGenId, fullGeneration);
     
-    // Сразу возвращаем ID полной генерации
-    res.json({
-      success: true,
-      full_generation_id: fullGenId,
-      status: 'processing',
-      message: 'Полная генерация запущена. Используйте /api/generate-full/{id} для проверки статуса.'
-    });
+    // Проверяем параметр wait ПЕРЕД отправкой ответа
+    if (req.query.wait !== 'true') {
+      // Обычный режим - сразу возвращаем ответ
+      res.json({
+        success: true,
+        full_generation_id: fullGenId,
+        status: 'processing',
+        message: 'Полная генерация запущена. Используйте /api/generate-full/{id} для проверки статуса.'
+      });
+    }
     
     // Запускаем генерацию в фоне
     (async () => {
@@ -1425,6 +1378,44 @@ app.post('/api/generate-full', validateApiKey, async (req, res) => {
       }
     })();
     
+    // Если wait=true, ждем результат
+    if (req.query.wait === 'true') {
+      console.log('⏳ Режим ожидания активирован...');
+      
+      const startTime = Date.now();
+      const maxWaitTime = 240000; // 4 минуты
+      
+      // Ждем завершения
+      while (Date.now() - startTime < maxWaitTime) {
+        await new Promise(resolve => setTimeout(resolve, 2000));
+        
+        const currentStatus = fullGenerations.get(fullGenId);
+        
+        if (currentStatus && (currentStatus.status === 'completed' || currentStatus.status === 'failed')) {
+          return res.json({
+            success: currentStatus.status === 'completed',
+            full_generation_id: fullGenId,
+            status: currentStatus.status,
+            prompt: currentStatus.prompt,
+            original: currentStatus.original || {},
+            upscaled: currentStatus.upscaled || [],
+            stats: currentStatus.stats || {},
+            error: currentStatus.error
+          });
+        }
+      }
+      
+      // Таймаут
+      const finalStatus = fullGenerations.get(fullGenId);
+      return res.json({
+        success: false,
+        full_generation_id: fullGenId,
+        status: 'timeout',
+        message: 'Generation is taking longer than expected.',
+        current_status: finalStatus ? finalStatus.status : 'unknown'
+      });
+    }
+    
   } catch (error) {
     console.error('❌ Ошибка запуска полной генерации:', error);
     res.status(500).json({
@@ -1552,6 +1543,25 @@ app.get('/admin', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'admin.html'));
 });
 
+// USER: Получение информации о пользователе
+app.get('/api/user/info', validateApiKey, (req, res) => {
+  const { user, apiKey } = req;
+  const usage = userUsage.get(apiKey) || { count: 0, resetDate: new Date() };
+  
+  res.json({
+    success: true,
+    username: user.userEmail,
+    email: user.userEmail,
+    role: user.role || 'user',
+    status: user.status,
+    monthlyLimit: user.monthlyLimit,
+    currentUsage: usage.count,
+    remainingCredits: user.monthlyLimit === -1 ? 'unlimited' : Math.max(0, user.monthlyLimit - usage.count),
+    resetDate: usage.resetDate,
+    createdAt: user.createdAt
+  });
+});
+
 // Корневой роут
 app.get('/', (req, res) => {
   res.json({
@@ -1561,6 +1571,7 @@ app.get('/', (req, res) => {
       health: '/health',
       admin: '/admin',
       api: {
+        userInfo: 'GET /api/user/info',
         generate: 'POST /api/generate (async)',
         status: 'GET /api/task/:taskId',
         tasks: 'GET /api/tasks (admin only)',
@@ -1577,7 +1588,8 @@ app.get('/', (req, res) => {
       '2.1.3': 'Упрощена логика upscale - работаем с временными вложениями напрямую',
       '2.1.4': 'Добавлено ожидание преобразования временных вложений в постоянные',
       '2.1.5': 'Использование встроенного метода Midjourney для upscale',
-      '2.2.0': 'Добавлен endpoint для полной генерации с автоматическим upscale всех варианто!'
+      '2.2.0': 'Добавлен endpoint для полной генерации с автоматическим upscale всех вариантов!',
+      '2.2.1': 'Добавлена поддержка параметра wait=true для синхронного ожидания результата'
     }
   });
 });
