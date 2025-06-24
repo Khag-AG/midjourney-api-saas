@@ -226,6 +226,39 @@ app.post('/admin/users', async (req, res) => {
   
   console.log(`👤 Новый ${role} создан: ${userEmail}`);
   
+  if (req.query.wait === 'true' || req.body.wait === true) {
+  const startTime = Date.now();
+  const maxWaitTime = 35000; // 35 секунд (меньше лимита Make.com)
+  
+  while (Date.now() - startTime < maxWaitTime) {
+    await new Promise(resolve => setTimeout(resolve, 2000));
+    
+    const currentStatus = fullGenerations.get(fullGenId);
+    
+    if (currentStatus && (currentStatus.status === 'completed' || currentStatus.status === 'failed')) {
+      return res.json({
+        success: currentStatus.status === 'completed',
+        full_generation_id: fullGenId,
+        status: currentStatus.status,
+        prompt: currentStatus.prompt,
+        original: currentStatus.original,
+        upscaled: currentStatus.upscaled,
+        stats: currentStatus.stats,
+        error: currentStatus.error
+      });
+    }
+  }
+  
+  // Если время вышло, возвращаем текущий статус
+  const finalStatus = fullGenerations.get(fullGenId);
+  return res.json({
+    success: false,
+    full_generation_id: fullGenId,
+    status: finalStatus ? finalStatus.status : 'timeout',
+    message: 'Generation still in progress. Please check status later.'
+  });
+}
+
   res.json({
     success: true,
     apiKey: apiKey,
