@@ -226,36 +226,53 @@ app.post('/admin/users', async (req, res) => {
   
   console.log(`👤 Новый ${role} создан: ${userEmail}`);
   
-  if (req.query.wait === 'true' || req.body.wait === true) {
+  if (req.query.wait === 'true') {
+  // Ждем завершения генерации
   const startTime = Date.now();
-  const maxWaitTime = 35000; // 35 секунд (меньше лимита Make.com)
+  const maxWaitTime = 240000; // 4 минуты
   
-  while (Date.now() - startTime < maxWaitTime) {
-    await new Promise(resolve => setTimeout(resolve, 2000));
-    
-    const currentStatus = fullGenerations.get(fullGenId);
-    
-    if (currentStatus && (currentStatus.status === 'completed' || currentStatus.status === 'failed')) {
-      return res.json({
-        success: currentStatus.status === 'completed',
-        full_generation_id: fullGenId,
-        status: currentStatus.status,
-        prompt: currentStatus.prompt,
-        original: currentStatus.original,
-        upscaled: currentStatus.upscaled,
-        stats: currentStatus.stats,
-        error: currentStatus.error
-      });
+  // Функция для ожидания с проверкой
+  const waitForCompletion = async () => {
+    while (Date.now() - startTime < maxWaitTime) {
+      await new Promise(resolve => setTimeout(resolve, 2000)); // Ждем 2 секунды
+      
+      const currentStatus = fullGenerations.get(fullGenId);
+      
+      if (currentStatus && (currentStatus.status === 'completed' || currentStatus.status === 'failed')) {
+        return res.json({
+          success: currentStatus.status === 'completed',
+          full_generation_id: fullGenId,
+          status: currentStatus.status,
+          prompt: currentStatus.prompt,
+          original: currentStatus.original || {},
+          upscaled: currentStatus.upscaled || [],
+          stats: currentStatus.stats || {},
+          error: currentStatus.error
+        });
+      }
     }
-  }
+    
+    // Если время вышло
+    const finalStatus = fullGenerations.get(fullGenId);
+    return res.json({
+      success: false,
+      full_generation_id: fullGenId,
+      status: 'timeout',
+      message: 'Generation is taking longer than expected. Use GET endpoint to check status.',
+      current_status: finalStatus ? finalStatus.status : 'unknown'
+    });
+  };
   
-  // Если время вышло, возвращаем текущий статус
-  const finalStatus = fullGenerations.get(fullGenId);
-  return res.json({
-    success: false,
+  // Запускаем ожидание
+  return waitForCompletion();
+  
+} else {
+  // Обычный ответ без ожидания (как было раньше)
+  res.json({
+    success: true,
     full_generation_id: fullGenId,
-    status: finalStatus ? finalStatus.status : 'timeout',
-    message: 'Generation still in progress. Please check status later.'
+    status: 'processing',
+    message: 'Полная генерация запущена. Используйте /api/generate-full/{id} для проверки статуса.'
   });
 }
 
