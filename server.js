@@ -438,6 +438,7 @@ app.post('/api/generate', validateApiKey, async (req, res) => {
           prompt: prompt,
           image_url: result.uri,
           midjourney_id: result.id,
+          hash: result.hash || extractHashFromUrl(result.uri),
           user: user.userEmail,
           apiKey: apiKey,
           completedAt: new Date().toISOString()
@@ -454,6 +455,7 @@ app.post('/api/generate', validateApiKey, async (req, res) => {
           prompt,
           imageUrl: result.uri,
           taskId: result.id,
+          hash: result.hash || extractHashFromUrl(result.uri),
           timestamp: new Date().toISOString()
         };
         
@@ -566,6 +568,11 @@ app.get('/api/task/:taskId', validateApiKey, (req, res) => {
     response.midjourney_id = task.midjourney_id;
     response.task_id = task.midjourney_id;  // Для совместимости с upscale
     response.is_ephemeral = task.image_url && task.image_url.includes('ephemeral');
+    
+    // Если изображение все еще временное, добавляем рекомендацию подождать
+    if (response.is_ephemeral) {
+      response.recommendation = 'Image has ephemeral attachment. Wait 30-60 seconds before upscale.';
+    }
     
     // Удаляем выполненную задачу через 5 минут
     setTimeout(() => {
@@ -781,6 +788,13 @@ async function customUpscale(messageId, index, hash, user) {
   throw new Error(lastError || 'Failed to upscale with all custom_id variants');
 }
 
+// Извлечение hash из URL изображения
+function extractHashFromUrl(url) {
+  if (!url) return null;
+  const hashMatch = url.match(/([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})/);
+  return hashMatch ? hashMatch[1] : null;
+}
+
 // Проверка возраста сообщения Discord
 function getTimestampFromSnowflake(snowflake) {
   const DISCORD_EPOCH = 1420070400000;
@@ -845,11 +859,12 @@ app.post('/api/upscale', validateApiKey, async (req, res) => {
     
     const imageUrl = originalTask.imageUrl || originalTask.image_url;
     
-    // Извлекаем hash из URL
-    let hash = null;
-    if (imageUrl) {
-      const hashMatch = imageUrl.match(/([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})/);
-      hash = hashMatch ? hashMatch[1] : null;
+    // Сначала проверяем, есть ли hash в задаче
+    let hash = originalTask.hash;
+    
+    // Если нет, извлекаем из URL
+    if (!hash && imageUrl) {
+      hash = extractHashFromUrl(imageUrl);
     }
     
     if (!hash) {
@@ -873,9 +888,35 @@ app.post('/api/upscale', validateApiKey, async (req, res) => {
     }
     
     try {
-      const result = await customUpscale(task_id, idx, hash, user);
+      // Используем библиотеку midjourney для upscale
+      let client = userSessions.get(apiKey);
+      if (!client) {
+        client = await getMidjourneyClient(user);
+        userSessions.set(apiKey, client);
+      }
+      
+      console.log('📚 Используем библиотеку Midjourney для upscale');
+      
+      // Midjourney библиотека принимает hash и флаги
+      const flags = 0; // Default flags
+      const loading = (uri, progress) => {
+        console.log(`Upscale прогресс: ${progress}%`);
+      };
+      
+      const result = await client.Upscale({
+        index: idx,
+        msgId: task_id,
+        hash: hash,
+        flags: flags,
+        loading: loading
+      });
+      
+      if (!result || !result.uri) {
+        throw new Error('Failed to get upscale result from Midjourney library');
+      }
       
       console.log(`✅ Upscale завершен для ${user.userEmail}`);
+      console.log(`📎 URL результата: ${result.uri}`);
       
       const needBinary = req.headers['x-make-binary'] === 'true' || 
                         req.query.binary === 'true' ||
@@ -967,19 +1008,44 @@ app.post('/api/upscale', validateApiKey, async (req, res) => {
       });
       
     } catch (upscaleError) {
-      console.error('❌ Ошибка при выполнении upscale:', upscaleError.message);
+      console.error('❌ Ошибка библиотеки Midjourney:', upscaleError.message);
       
-      // Возвращаем ошибку с полезной информацией
-      return res.status(400).json({
-        success: false,
-        error: upscaleError.message,
-        suggestions: [
-          'Убедитесь, что с момента генерации прошло менее 15 минут',
-          'Проверьте правильность task_id',
-          'Попробуйте сгенерировать изображение заново',
-          'Если ошибка повторяется, проверьте Discord токен'
-        ]
-      });
+      // Если библиотека не сработала, пробуем наш метод
+      console.log('🔄 Пробуем альтернативный метод upscale...');
+      
+      try {
+        const result = await customUpscale(task_id, idx, hash, user);
+        
+        console.log(`✅ Альтернативный upscale завершен для ${user.userEmail}`);
+        
+        res.json({
+          success: true,
+          image_url: result.uri,
+          original_task_id: task_id,
+          selected_index: idx,
+          description: `Картинка ${idx} увеличена`,
+          timestamp: new Date().toISOString()
+        });
+        
+      } catch (customError) {
+        console.error('❌ Ошибка альтернативного метода:', customError.message);
+        
+        // Возвращаем ошибку с полезной информацией
+        return res.status(400).json({
+          success: false,
+          error: 'Failed to upscale image. The message might be too old or have temporary attachment.',
+          suggestions: [
+            'Убедитесь, что с момента генерации прошло менее 15 минут',
+            'Попробуйте подождать 30-60 секунд после генерации',
+            'Проверьте правильность task_id',
+            'Попробуйте сгенерировать изображение заново'
+          ],
+          debug: {
+            library_error: upscaleError.message,
+            custom_error: customError.message
+          }
+        });
+      }
     }
     
   } catch (error) {
@@ -1003,7 +1069,7 @@ app.get('/admin', (req, res) => {
 app.get('/', (req, res) => {
   res.json({
     name: 'Midjourney API Service',
-    version: '2.1.4',
+    version: '2.1.5',
     endpoints: {
       health: '/health',
       admin: '/admin',
@@ -1019,7 +1085,8 @@ app.get('/', (req, res) => {
       '2.1.1': 'Исправлена проблема с upscale - добавлены правильные headers и проверка возраста кнопок',
       '2.1.2': 'Добавлена обработка временных вложений (ephemeral) и ожидание постоянных URL',
       '2.1.3': 'Упрощена логика upscale - работаем с временными вложениями напрямую',
-      '2.1.4': 'Добавлено ожидание преобразования временных вложений в постоянные'
+      '2.1.4': 'Добавлено ожидание преобразования временных вложений в постоянные',
+      '2.1.5': 'Использование встроенного метода Midjourney для upscale'
     }
   });
 });
