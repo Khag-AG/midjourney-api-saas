@@ -793,6 +793,23 @@ async function waitForUpscaleResult(channelId, salaiToken, originalMessageId, in
 // Исправленная функция upscale с поддержкой временных вложений
 async function customUpscale(messageId, index, hash, user) {
   console.log('🚀 Используем собственную реализацию upscale');
+  // Детальная диагностика
+  console.log('🔍 Диагностика upscale:');
+  console.log(`  Message ID: ${messageId}`);
+  console.log(`  Index: ${index}`);
+  console.log(`  Hash: ${hash}`);
+  console.log(`  Server ID: ${user.serverId}`);
+  console.log(`  Channel ID: ${user.channelId}`);
+
+  // Проверяем возраст сообщения
+  const messageTimestamp = getTimestampFromSnowflake(messageId);
+  const messageAge = Date.now() - messageTimestamp;
+  console.log(`  Возраст сообщения: ${Math.floor(messageAge / 1000)} секунд`);
+  console.log(`  Максимальный возраст: 900 секунд (15 минут)`);
+
+  if (messageAge > 900000) { // 15 минут
+    console.log('  ⚠️ ВНИМАНИЕ: Сообщение слишком старое для upscale!');
+  }
   console.log('📋 Параметры upscale:', {
     messageId,
     index,
@@ -866,6 +883,10 @@ async function customUpscale(messageId, index, hash, user) {
       const statusCode = response.status;
       const responseText = await response.text();
       console.log(`📥 Discord ответ: ${statusCode}`);
+
+      if (responseText) {
+        console.log(`📄 Discord сообщение: ${responseText.substring(0, 200)}`);
+      }
       
       if (statusCode === 204) {
         console.log('✅ Команда upscale принята Discord!');
@@ -1701,6 +1722,67 @@ app.get('/', (req, res) => {
       '2.2.1': 'Добавлена поддержка параметра wait=true для синхронного ожидания результата'
     }
   });
+});
+
+// ТЕСТ: Проверка сообщения Discord
+app.get('/api/test/message/:messageId', validateApiKey, async (req, res) => {
+  try {
+    const { messageId } = req.params;
+    const { user } = req;
+    
+    console.log(`🔍 Проверяем сообщение ${messageId}`);
+    
+    const response = await fetch(`https://discord.com/api/v9/channels/${user.channelId}/messages/${messageId}`, {
+      headers: {
+        'Authorization': user.salaiToken,
+        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36'
+      }
+    });
+    
+    if (!response.ok) {
+      return res.status(response.status).json({
+        error: `Discord API error: ${response.status}`,
+        message: await response.text()
+      });
+    }
+    
+    const message = await response.json();
+    
+    // Извлекаем информацию о кнопках
+    const components = message.components || [];
+    const buttons = [];
+    
+    components.forEach(row => {
+      if (row.components) {
+        row.components.forEach(btn => {
+          if (btn.custom_id) {
+            buttons.push({
+              label: btn.label || btn.emoji?.name || 'No label',
+              custom_id: btn.custom_id,
+              style: btn.style,
+              disabled: btn.disabled
+            });
+          }
+        });
+      }
+    });
+    
+    res.json({
+      message_id: message.id,
+      author: message.author.username,
+      content: message.content,
+      has_attachments: message.attachments.length > 0,
+      attachment_url: message.attachments[0]?.url,
+      components_count: components.length,
+      buttons: buttons,
+      created_at: message.timestamp,
+      message_age_seconds: Math.floor((Date.now() - new Date(message.timestamp).getTime()) / 1000)
+    });
+    
+  } catch (error) {
+    console.error('Ошибка проверки сообщения:', error);
+    res.status(500).json({ error: error.message });
+  }
 });
 
 // Запуск сервера
