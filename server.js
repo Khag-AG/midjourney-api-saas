@@ -1732,7 +1732,7 @@ app.get('/api/test/message/:messageId', validateApiKey, async (req, res) => {
     
     console.log(`🔍 Проверяем сообщение ${messageId}`);
     
-    const response = await fetch(`https://discord.com/api/v9/channels/${user.channelId}/messages/${messageId}`, {
+    const response = await fetch(`https://discord.com/api/v9/channels/${user.channelId}/messages?limit=5`, {
       headers: {
         'Authorization': user.salaiToken,
         'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36'
