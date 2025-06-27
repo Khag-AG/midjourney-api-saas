@@ -11,6 +11,57 @@ const activeTasks = new Map(); // Хранилище активных задач
 app.use(express.json());
 app.use(express.static('public'));
 
+// Защита токенов в логах
+const originalConsoleLog = console.log;
+const originalConsoleError = console.error;
+
+// Функция для скрытия токенов
+function hideTokens(str) {
+  if (typeof str === 'string') {
+    // Скрываем Discord токены
+    return str.replace(/MTM3[A-Za-z0-9\-._]{50,}/g, '***HIDDEN_TOKEN***');
+  }
+  return str;
+}
+
+// Перехватываем console.log
+console.log = function(...args) {
+  const cleanArgs = args.map(arg => {
+    if (typeof arg === 'string') {
+      return hideTokens(arg);
+    } else if (typeof arg === 'object' && arg !== null) {
+      try {
+        const str = JSON.stringify(arg);
+        const cleaned = hideTokens(str);
+        return JSON.parse(cleaned);
+      } catch {
+        return arg;
+      }
+    }
+    return arg;
+  });
+  originalConsoleLog.apply(console, cleanArgs);
+};
+
+// Перехватываем console.error
+console.error = function(...args) {
+  const cleanArgs = args.map(arg => {
+    if (typeof arg === 'string') {
+      return hideTokens(arg);
+    } else if (typeof arg === 'object' && arg !== null) {
+      try {
+        const str = JSON.stringify(arg);
+        const cleaned = hideTokens(str);
+        return JSON.parse(cleaned);
+      } catch {
+        return arg;
+      }
+    }
+    return arg;
+  });
+  originalConsoleError.apply(console, cleanArgs);
+};
+
 // Директория для хранения данных
 const DATA_DIR = process.env.DATA_PATH || path.join(__dirname, 'data');
 console.log('📁 Используется директория данных:', DATA_DIR);
@@ -529,7 +580,7 @@ app.post('/api/generate', validateApiKey, async (req, res) => {
           
           // Ждем до 30 секунд для получения постоянного вложения
           for (let i = 0; i < 10; i++) {
-            await new Promise(resolve => setTimeout(resolve, 3000));
+            await new Promise(resolve => setTimeout(resolve, 15000));
             
             try {
               const checkResponse = await fetch(`https://discord.com/api/v9/channels/${user.channelId}/messages/${result.id}`, {
@@ -706,7 +757,7 @@ async function waitForUpscaleResult(channelId, salaiToken, originalMessageId, in
   console.log(`⏳ Ожидаем результат upscale для сообщения ${originalMessageId}, картинка ${index}`);
   
   // Небольшая начальная задержка
-  await new Promise(resolve => setTimeout(resolve, 3000));
+  await new Promise(resolve => setTimeout(resolve, 5000));
   
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
     await new Promise(resolve => setTimeout(resolve, 2000));
@@ -754,10 +805,13 @@ async function customUpscale(messageId, index, hash, user) {
   // Для временных вложений нужен особый подход
   // Пробуем несколько вариантов custom_id
   const customIds = [
-    `MJ::JOB::upsample::${index}::${hash}`,
-    `MJ::JOB::upsample_v2::${index}::${hash}`,
-    `MJ::JOB::high_variation::${index}::${hash}`
-  ];
+  `MJ::JOB::upsample::${index}::${hash}`,
+  `MJ::JOB::upsample_v6::${index}::${hash}::SOLO`,
+  `MJ::JOB::upsample_v5::${index}::${hash}`,
+  `MJ::JOB::upsample_v6_2x::${index}::${hash}::SOLO`,
+  `MJ::JOB::high_variation::${index}::${hash}::1`,
+  `MJ::JOB::low_variation::${index}::${hash}::1`
+];
   
   let lastError = null;
   
@@ -1233,7 +1287,7 @@ app.post('/api/generate-full', validateApiKey, async (req, res) => {
           console.log('⚠️ Обнаружено временное вложение, ждем постоянное...');
           
           for (let i = 0; i < 15; i++) {
-            await new Promise(resolve => setTimeout(resolve, 3000));
+            await new Promise(resolve => setTimeout(resolve, 15000));
             
             try {
               const checkResponse = await fetch(`https://discord.com/api/v9/channels/${user.channelId}/messages/${generateResult.id}`, {
