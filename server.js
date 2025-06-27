@@ -1358,15 +1358,12 @@ app.post('/api/generate-full', validateApiKey, async (req, res) => {
                 // Небольшая случайная задержка чтобы не спамить Discord
                 await new Promise(resolve => setTimeout(resolve, 3000 + Math.random() * 5000));
                 
-                const upscaleResult = await client.Upscale({
-                  index: index,
-                  msgId: generateResult.id,
-                  hash: fullGeneration.original.hash,
-                  flags: 0,
-                  loading: (uri, progress) => {
-                    console.log(`    Вариант ${index} прогресс: ${progress}%`);
-                  }
-                });
+                const upscaleResult = await customUpscale(
+                  generateResult.id,
+                  index,
+                  fullGeneration.original.hash,
+                  user
+                );
                 
                 if (upscaleResult && upscaleResult.uri) {
                   console.log(`  ✅ Вариант ${index} успешно увеличен`);
