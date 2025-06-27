@@ -12,7 +12,8 @@ app.use(express.json());
 app.use(express.static('public'));
 
 // Директория для хранения данных
-const DATA_DIR = path.join(__dirname, 'data');
+const DATA_DIR = process.env.DATA_PATH || path.join(__dirname, 'data');
+console.log('📁 Используется директория данных:', DATA_DIR);
 
 // Инициализация директории данных
 async function initDataDir() {
@@ -49,6 +50,8 @@ class FileDB {
     }
   }
 
+  
+
   get(key) { return this.data.get(key); }
   set(key, value) { this.data.set(key, value); this.save(); return this; }
   has(key) { return this.data.has(key); }
@@ -65,14 +68,60 @@ const generationHistory = new FileDB('history.json');
 const fullGenerations = new FileDB('full_generations.json');
 const userSessions = new Map();
 
-// Инициализация
+// Измените функцию init на:
 async function init() {
   await initDataDir();
   await users.load();
   await userUsage.load();
   await generationHistory.load();
   await fullGenerations.load();
+  await restoreFromBackup(); // Добавьте эту строку
   console.log(`📊 Загружено ${users.size} пользователей из базы данных`);
+}
+
+// Автосохранение каждые 5 минут
+setInterval(async () => {
+  console.log('💾 Автосохранение данных...');
+  await users.save();
+  await userUsage.save();
+  await generationHistory.save();
+  await fullGenerations.save();
+  console.log('✅ Данные сохранены');
+}, 300000); // 5 минут
+
+// Восстановление из бэкапа при старте
+async function restoreFromBackup() {
+  try {
+    const backupPath = path.join(__dirname, 'data-backup.json');
+    const backup = JSON.parse(await fs.readFile(backupPath, 'utf8'));
+    
+    if (backup.users && users.size === 0) {
+      backup.users.forEach(([key, value]) => users.set(key, value));
+      await users.save();
+      console.log('✅ Пользователи восстановлены из бэкапа');
+    }
+  } catch (error) {
+    console.log('📋 Бэкап не найден или пуст');
+  }
+}
+
+// Функция для экспорта текущих данных
+async function exportCurrentData() {
+  const backup = {
+    users: [...users.data],
+    usage: [...userUsage.data],
+    timestamp: new Date().toISOString()
+  };
+  
+  try {
+    await fs.writeFile(
+      path.join(__dirname, 'data-backup.json'), 
+      JSON.stringify(backup, null, 2)
+    );
+    console.log('📦 Бэкап создан: data-backup.json');
+  } catch (error) {
+    console.error('❌ Ошибка создания бэкапа:', error);
+  }
 }
 
 // Функция генерации API ключей
@@ -175,6 +224,12 @@ async function getMidjourneyClient(user) {
 }
 
 // === API ENDPOINTS ===
+
+// Эндпоинт для создания бэкапа
+app.get('/admin/backup', async (req, res) => {
+  await exportCurrentData();
+  res.json({ success: true, message: 'Backup created' });
+});
 
 // Проверка статуса системы
 app.get('/health', (req, res) => {
@@ -883,10 +938,10 @@ app.post('/api/upscale', validateApiKey, async (req, res) => {
     // Увеличиваем задержку для временных вложений
     if (imageUrl.includes('ephemeral')) {
       console.log('⚠️ Обнаружено временное вложение, увеличиваем задержку...');
-      await new Promise(resolve => setTimeout(resolve, 5000)); // 5 секунд для временных
+      await new Promise(resolve => setTimeout(resolve, 20000)); // 20 секунд для временных
     } else {
       console.log('⏳ Ждем 2 секунды перед upscale...');
-      await new Promise(resolve => setTimeout(resolve, 2000));
+      await new Promise(resolve => setTimeout(resolve, 10000)); // 10 секунд для обычных
     }
     
     try {
@@ -1069,7 +1124,7 @@ app.post('/api/generate-full', validateApiKey, async (req, res) => {
       prompt, 
       upscale_all = true, 
       upscale_indexes = [1, 2, 3, 4],
-      wait_before_upscale = 5000, // Задержка перед upscale в мс
+      wait_before_upscale = 15000, // Задержка перед upscale в мс (15 секунд)
       parallel_upscale = true // Параллельный или последовательный upscale
     } = req.body;
     
@@ -1226,7 +1281,7 @@ app.post('/api/generate-full', validateApiKey, async (req, res) => {
                 console.log(`  📐 Начинаем upscale варианта ${index}...`);
                 
                 // Небольшая случайная задержка чтобы не спамить Discord
-                await new Promise(resolve => setTimeout(resolve, Math.random() * 2000));
+                await new Promise(resolve => setTimeout(resolve, 3000 + Math.random() * 5000));
                 
                 const upscaleResult = await client.Upscale({
                   index: index,
@@ -1333,7 +1388,7 @@ app.post('/api/generate-full', validateApiKey, async (req, res) => {
                 
                 // Задержка между upscale
                 if (index < upscale_indexes[upscale_indexes.length - 1]) {
-                  await new Promise(resolve => setTimeout(resolve, 3000));
+                  await new Promise(resolve => setTimeout(resolve, 10000));
                 }
                 
               } catch (error) {
