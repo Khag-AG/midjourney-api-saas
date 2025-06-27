@@ -1730,9 +1730,9 @@ app.get('/api/test/message/:messageId', validateApiKey, async (req, res) => {
     const { messageId } = req.params;
     const { user } = req;
     
-    console.log(`🔍 Проверяем сообщение ${messageId}`);
+    console.log(`🔍 Проверяем сообщения в канале для ${messageId}`);
     
-    const response = await fetch(`https://discord.com/api/v9/channels/${user.channelId}/messages?limit=5`, {
+    const response = await fetch(`https://discord.com/api/v9/channels/${user.channelId}/messages?limit=10`, {
       headers: {
         'Authorization': user.salaiToken,
         'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36'
@@ -1746,10 +1746,21 @@ app.get('/api/test/message/:messageId', validateApiKey, async (req, res) => {
       });
     }
     
-    const message = await response.json();
+    const messages = await response.json();
+    
+    // Ищем наше сообщение
+    const targetMessage = messages.find(msg => msg.id === messageId);
+    
+    if (!targetMessage) {
+      return res.json({
+        error: 'Message not found in recent messages',
+        recent_message_ids: messages.map(m => m.id),
+        searched_id: messageId
+      });
+    }
     
     // Извлекаем информацию о кнопках
-    const components = message.components || [];
+    const components = targetMessage.components || [];
     const buttons = [];
     
     components.forEach(row => {
@@ -1768,15 +1779,15 @@ app.get('/api/test/message/:messageId', validateApiKey, async (req, res) => {
     });
     
     res.json({
-      message_id: message.id,
-      author: message.author.username,
-      content: message.content,
-      has_attachments: message.attachments.length > 0,
-      attachment_url: message.attachments[0]?.url,
+      message_id: targetMessage.id,
+      author: targetMessage.author?.username || 'Unknown',
+      content: targetMessage.content || '',
+      has_attachments: (targetMessage.attachments || []).length > 0,
+      attachment_url: targetMessage.attachments?.[0]?.url,
       components_count: components.length,
       buttons: buttons,
-      created_at: message.timestamp,
-      message_age_seconds: Math.floor((Date.now() - new Date(message.timestamp).getTime()) / 1000)
+      created_at: targetMessage.timestamp,
+      message_age_seconds: Math.floor((Date.now() - new Date(targetMessage.timestamp).getTime()) / 1000)
     });
     
   } catch (error) {
