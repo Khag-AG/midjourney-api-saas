@@ -1436,15 +1436,13 @@ app.post('/api/generate-full', validateApiKey, async (req, res) => {
               try {
                 console.log(`  📐 Upscale варианта ${index}...`);
                 
-                const upscaleResult = await client.Upscale({
-                  index: index,
-                  msgId: generateResult.id,
-                  hash: fullGeneration.original.hash,
-                  flags: 0,
-                  loading: (uri, progress) => {
-                    console.log(`    Прогресс: ${progress}%`);
-                  }
-                });
+                console.log(`  🔄 Используем customUpscale для варианта ${index}...`);
+                const upscaleResult = await customUpscale(
+                  generateResult.id,
+                  index,
+                  fullGeneration.original.hash,
+                  user
+                );
                 
                 if (upscaleResult && upscaleResult.uri) {
                   console.log(`  ✅ Вариант ${index} успешно увеличен`);
