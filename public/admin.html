@@ -335,7 +335,7 @@
                         <option value="active">Активные</option>
                         <option value="blocked">Заблокированные</option>
                     </select>
-                    <input type="text" id="searchUser" placeholder="Поиск по email..." class="form-input" style="width: 300px;" onkeyup="filterUsers()">
+                    <input type="text" id="searchUser" placeholder="Поиск по username..." class="form-input" style="width: 300px;" onkeyup="filterUsers()">
                 </div>
                 
                 <div id="usersList"></div>
@@ -349,37 +349,37 @@
                 <form id="createUserForm">
                     <div class="form-grid">
                         <div class="form-group">
-                            <label class="form-label">📧 Email пользователя</label>
-                            <input type="email" id="userEmail" class="form-input" placeholder="user@example.com" required>
+                            <label class="form-label">📧 Username пользователя</label>
+                            <input type="text" id="username" class="form-input" placeholder="user@example.com или любое имя" required>
                         </div>
                         <div class="form-group">
                             <label class="form-label">👤 Роль пользователя</label>
-                            <select id="userRole" class="form-select" onchange="toggleLimitInput()">
-                                <option value="user">Обычный пользователь</option>
-                                <option value="admin">Администратор (без лимитов)</option>
+                            <select id="is_admin" class="form-select" onchange="toggleLimitInput()">
+                                <option value="false">Обычный пользователь</option>
+                                <option value="true">Администратор (без лимитов)</option>
                             </select>
                         </div>
                     </div>
                     
                     <div class="form-group" id="limitGroup">
                         <label class="form-label">📊 Месячный лимит генераций</label>
-                        <input type="number" id="monthlyLimit" class="form-input" value="50" min="1" max="10000">
+                        <input type="number" id="monthly_limit" class="form-input" value="50" min="1" max="10000">
                     </div>
                     
                     <h3 style="margin: 30px 0 20px 0; color: #4a5568;">🔧 Discord настройки</h3>
                     <div class="form-grid">
                         <div class="form-group">
                             <label class="form-label">🏠 Discord Server ID</label>
-                            <input type="text" id="serverId" class="form-input" placeholder="1378677603203813386" required>
+                            <input type="text" id="server_id" class="form-input" placeholder="1378677603203813386" required>
                         </div>
                         <div class="form-group">
                             <label class="form-label">💬 Discord Channel ID</label>
-                            <input type="text" id="channelId" class="form-input" placeholder="1378677603203813389" required>
+                            <input type="text" id="channel_id" class="form-input" placeholder="1378677603203813389" required>
                         </div>
                     </div>
                     <div class="form-group">
                         <label class="form-label">🔑 Discord User Token</label>
-                        <input type="text" id="salaiToken" class="form-input" placeholder="MTM3ODY3NTgwOTE5NTEzMDkwMQ..." required>
+                        <input type="text" id="salai_token" class="form-input" placeholder="MTM3ODY3NTgwOTE5NTEzMDkwMQ..." required>
                     </div>
                     
                     <button type="submit" class="btn btn-primary" style="width: 100%; padding: 16px; font-size: 16px; margin-top: 20px;">
@@ -418,14 +418,14 @@
             <form id="editForm">
                 <input type="hidden" id="editApiKey">
                 <div class="form-group">
-                    <label class="form-label">📧 Email</label>
-                    <input type="email" id="editEmail" class="form-input" required>
+                    <label class="form-label">📧 Username</label>
+                    <input type="text" id="editUsername" class="form-input" required>
                 </div>
                 <div class="form-group">
                     <label class="form-label">👤 Роль</label>
-                    <select id="editRole" class="form-select" onchange="toggleEditLimit()">
-                        <option value="user">Пользователь</option>
-                        <option value="admin">Администратор</option>
+                    <select id="editIsAdmin" class="form-select" onchange="toggleEditLimit()">
+                        <option value="false">Пользователь</option>
+                        <option value="true">Администратор</option>
                     </select>
                 </div>
                 <div class="form-group" id="editLimitGroup">
@@ -453,13 +453,13 @@
 
         // Переключение лимита при выборе роли
         function toggleLimitInput() {
-            const role = document.getElementById('userRole').value;
-            document.getElementById('limitGroup').style.display = role === 'admin' ? 'none' : 'block';
+            const isAdmin = document.getElementById('is_admin').value === 'true';
+            document.getElementById('limitGroup').style.display = isAdmin ? 'none' : 'block';
         }
 
         function toggleEditLimit() {
-            const role = document.getElementById('editRole').value;
-            document.getElementById('editLimitGroup').style.display = role === 'admin' ? 'none' : 'block';
+            const isAdmin = document.getElementById('editIsAdmin').value === 'true';
+            document.getElementById('editLimitGroup').style.display = isAdmin ? 'none' : 'block';
         }
 
         // Загрузка пользователей
@@ -507,7 +507,7 @@
             const filteredUsers = allUsers.filter(user => {
                 if (roleFilter && user.role !== roleFilter) return false;
                 if (statusFilter && user.status !== statusFilter) return false;
-                if (searchFilter && !user.email.toLowerCase().includes(searchFilter)) return false;
+                if (searchFilter && !user.username.toLowerCase().includes(searchFilter)) return false;
                 return true;
             });
             
@@ -535,7 +535,7 @@
                     <div class="user-header">
                         <div class="user-info">
                             <div>
-                                <span class="user-email">📧 ${user.email}</span>
+                                <span class="user-email">📧 ${user.username}</span>
                                 <span class="user-role role-${user.role}">${user.role === 'admin' ? '👑 Администратор' : '👤 Пользователь'}</span>
                             </div>
                             <div style="margin-top: 5px;">
@@ -553,9 +553,9 @@
                         <div class="detail-group">
                             <div class="detail-label">📊 Использование</div>
                             <div class="detail-value">
-                                ${isAdmin ? '♾️ Безлимит' : `${user.currentUsage} / ${user.monthlyLimit}`}
+                                ${isAdmin || user.monthlyLimit === -1 ? '♾️ Безлимит' : `${user.currentUsage} / ${user.monthlyLimit}`}
                             </div>
-                            ${!isAdmin ? `
+                            ${!isAdmin && user.monthlyLimit > 0 ? `
                                 <div class="progress-bar">
                                     <div class="progress-fill" style="width: ${progressPercent}%"></div>
                                 </div>
@@ -575,7 +575,7 @@
                         <button onclick="toggleBlock('${user.apiKey}')" class="btn ${user.status === 'active' ? 'btn-danger' : 'btn-success'} btn-sm">
                             ${user.status === 'active' ? '🔒 Заблокировать' : '🔓 Разблокировать'}
                         </button>
-                        ${!isAdmin ? `<button onclick="resetLimits('${user.apiKey}')" class="btn btn-success btn-sm">🔄 Сбросить лимиты</button>` : ''}
+                        ${!isAdmin && user.monthlyLimit > 0 ? `<button onclick="resetLimits('${user.apiKey}')" class="btn btn-success btn-sm">🔄 Сбросить лимиты</button>` : ''}
                         <button onclick="deleteUser('${user.apiKey}')" class="btn btn-danger btn-sm">🗑️ Удалить</button>
                     </div>
                 `;
@@ -589,74 +589,86 @@
                 const response = await fetch(`/admin/users/${apiKey}`);
                 const user = await response.json();
                 
-                const historyHtml = user.history && user.history.length > 0 
-                    ? user.history.map(item => `
-                        <div class="history-item">
-                            <div class="history-header">
-                                <strong>${item.prompt}</strong>
-                                <span class="history-time">${new Date(item.timestamp).toLocaleString('ru-RU')}</span>
+                // Парсим историю если она есть
+                let historyHtml = '<p>Нет истории генераций</p>';
+                
+                if (user.history && user.history.length > 0) {
+                    historyHtml = user.history.map(item => {
+                        let resultData = {};
+                        try {
+                            resultData = typeof item.result === 'string' ? JSON.parse(item.result) : item.result;
+                        } catch (e) {
+                            resultData = { imageUrl: '' };
+                        }
+                        
+                        return `
+                            <div class="history-item">
+                                <div class="history-header">
+                                    <strong>${item.prompt}</strong>
+                                    <span class="history-time">${new Date(item.created_at).toLocaleString('ru-RU')}</span>
+                                </div>
+                                ${resultData.imageUrl ? `<a href="${resultData.imageUrl}" target="_blank" class="btn btn-primary btn-sm">🖼️ Посмотреть</a>` : ''}
                             </div>
-                            <a href="${item.imageUrl}" target="_blank" class="btn btn-primary btn-sm">🖼️ Посмотреть</a>
-                        </div>
-                    `).join('')
-                    : '<p>Нет истории генераций</p>';
+                        `;
+                    }).join('');
+                }
                 
                 document.getElementById('modalContent').innerHTML = `
                     <h2>👤 Детали пользователя</h2>
                     
                     <div class="detail-group">
-                        <div class="detail-label">📧 Email</div>
-                        <div class="detail-value">${user.userEmail}</div>
+                        <div class="detail-label">📧 Username</div>
+                        <div class="detail-value">${user.username}</div>
                     </div>
                     
                     <div class="detail-group">
                         <div class="detail-label">👤 Роль</div>
-                        <div class="detail-value">${user.role === 'admin' ? '👑 Администратор' : '👤 Пользователь'}</div>
+                        <div class="detail-value">${user.is_admin ? '👑 Администратор' : '👤 Пользователь'}</div>
                     </div>
                     
                     <div class="detail-group">
                         <div class="detail-label">⚡ Статус</div>
-                        <div class="detail-value">${user.status === 'active' ? '✅ Активен' : '🔒 Заблокирован'}</div>
+                        <div class="detail-value">${user.is_blocked ? '🔒 Заблокирован' : '✅ Активен'}</div>
                     </div>
                     
                     <div class="detail-group">
                         <div class="detail-label">🔑 API ключ</div>
-                        <div class="detail-value">${user.apiKey}</div>
-                        <button onclick="copyToClipboard('${user.apiKey}')" class="btn btn-success btn-sm" style="margin-top: 10px;">📋 Копировать</button>
+                        <div class="detail-value">${user.api_key}</div>
+                        <button onclick="copyToClipboard('${user.api_key}')" class="btn btn-success btn-sm" style="margin-top: 10px;">📋 Копировать</button>
                     </div>
                     
                     <h3 style="margin: 30px 0 15px 0;">🔧 Discord настройки</h3>
                     
                     <div class="detail-group">
                         <div class="detail-label">🏠 Server ID</div>
-                        <div class="detail-value">${user.serverId}</div>
+                        <div class="detail-value">${user.server_id}</div>
                     </div>
                     
                     <div class="detail-group">
                         <div class="detail-label">💬 Channel ID</div>
-                        <div class="detail-value">${user.channelId}</div>
+                        <div class="detail-value">${user.channel_id}</div>
                     </div>
                     
                     <div class="detail-group">
                         <div class="detail-label">🔐 User Token</div>
-                        <div class="detail-value">${user.salaiToken.substring(0, 30)}...</div>
+                        <div class="detail-value">${user.salai_token ? '***hidden***' : 'Не указан'}</div>
                     </div>
                     
                     <h3 style="margin: 30px 0 15px 0;">📊 Статистика</h3>
                     
                     <div class="detail-group">
                         <div class="detail-label">Использовано генераций</div>
-                        <div class="detail-value">${user.currentUsage || 0}</div>
+                        <div class="detail-value">${user.usage_count || 0}</div>
                     </div>
                     
                     <div class="detail-group">
                         <div class="detail-label">Месячный лимит</div>
-                        <div class="detail-value">${user.monthlyLimit === -1 ? '♾️ Безлимит' : user.monthlyLimit}</div>
+                        <div class="detail-value">${user.monthly_limit === -1 ? '♾️ Безлимит' : user.monthly_limit}</div>
                     </div>
                     
                     <div class="detail-group">
                         <div class="detail-label">Дата сброса</div>
-                        <div class="detail-value">${user.resetDate ? new Date(user.resetDate).toLocaleDateString('ru-RU') : 'Н/Д'}</div>
+                        <div class="detail-value">${user.reset_date ? new Date(user.reset_date).toLocaleDateString('ru-RU') : 'Н/Д'}</div>
                     </div>
                     
                     <h3 style="margin: 30px 0 15px 0;">📜 Последние генерации</h3>
@@ -676,8 +688,8 @@
             if (!user) return;
             
             document.getElementById('editApiKey').value = apiKey;
-            document.getElementById('editEmail').value = user.email;
-            document.getElementById('editRole').value = user.role || 'user';
+            document.getElementById('editUsername').value = user.username;
+            document.getElementById('editIsAdmin').value = user.role === 'admin' ? 'true' : 'false';
             document.getElementById('editLimit').value = user.monthlyLimit;
             
             toggleEditLimit();
@@ -689,12 +701,11 @@
             e.preventDefault();
             
             const apiKey = document.getElementById('editApiKey').value;
+            const isAdmin = document.getElementById('editIsAdmin').value === 'true';
             const updates = {
-                userEmail: document.getElementById('editEmail').value,
-                role: document.getElementById('editRole').value,
-                monthlyLimit: document.getElementById('editRole').value === 'admin' 
-                    ? -1 
-                    : parseInt(document.getElementById('editLimit').value)
+                username: document.getElementById('editUsername').value,
+                is_admin: isAdmin,
+                monthly_limit: isAdmin ? -1 : parseInt(document.getElementById('editLimit').value)
             };
             
             try {
@@ -771,14 +782,14 @@
         document.getElementById('createUserForm').addEventListener('submit', async (e) => {
             e.preventDefault();
             
-            const role = document.getElementById('userRole').value;
+            const isAdmin = document.getElementById('is_admin').value === 'true';
             const userData = {
-                userEmail: document.getElementById('userEmail').value,
-                serverId: document.getElementById('serverId').value,
-                channelId: document.getElementById('channelId').value,
-                salaiToken: document.getElementById('salaiToken').value,
-                monthlyLimit: role === 'admin' ? -1 : parseInt(document.getElementById('monthlyLimit').value),
-                role: role
+                username: document.getElementById('username').value,
+                server_id: document.getElementById('server_id').value,
+                channel_id: document.getElementById('channel_id').value,
+                salai_token: document.getElementById('salai_token').value,
+                monthly_limit: isAdmin ? -1 : parseInt(document.getElementById('monthly_limit').value),
+                is_admin: isAdmin
             };
             
             try {
@@ -791,7 +802,7 @@
                 const result = await response.json();
                 
                 if (result.success) {
-                    showAlert(`✅ ${role === 'admin' ? 'Администратор' : 'Пользователь'} создан!<br>🔑 API ключ: <strong>${result.apiKey}</strong>`, 'success');
+                    showAlert(`✅ ${isAdmin ? 'Администратор' : 'Пользователь'} создан!<br>🔑 API ключ: <strong>${result.apiKey}</strong>`, 'success');
                     document.getElementById('createUserForm').reset();
                     loadUsers();
                     copyToClipboard(result.apiKey);
@@ -816,21 +827,30 @@
                     return;
                 }
                 
-                historyList.innerHTML = data.history.map(item => `
-                    <div class="history-item">
-                        <div class="history-header">
-                            <div>
-                                <strong>📧 ${item.userEmail}</strong>
-                                <span style="color: #718096; margin-left: 10px;">API: ${item.apiKey}</span>
+                historyList.innerHTML = data.history.map(item => {
+                    let resultData = {};
+                    try {
+                        resultData = typeof item.result === 'string' ? JSON.parse(item.result) : item.result;
+                    } catch (e) {
+                        resultData = { imageUrl: '' };
+                    }
+                    
+                    return `
+                        <div class="history-item">
+                            <div class="history-header">
+                                <div>
+                                    <strong>📧 ${item.username}</strong>
+                                    <span style="color: #718096; margin-left: 10px;">API: ${item.api_key.substring(0, 20)}...</span>
+                                </div>
+                                <span class="history-time">${new Date(item.created_at).toLocaleString('ru-RU')}</span>
                             </div>
-                            <span class="history-time">${new Date(item.timestamp).toLocaleString('ru-RU')}</span>
+                            <div style="margin: 10px 0;">
+                                <strong>Промпт:</strong> ${item.prompt}
+                            </div>
+                            ${resultData.imageUrl ? `<a href="${resultData.imageUrl}" target="_blank" class="btn btn-primary btn-sm">🖼️ Посмотреть изображение</a>` : ''}
                         </div>
-                        <div style="margin: 10px 0;">
-                            <strong>Промпт:</strong> ${item.prompt}
-                        </div>
-                        <a href="${item.imageUrl}" target="_blank" class="btn btn-primary btn-sm">🖼️ Посмотреть изображение</a>
-                    </div>
-                `).join('');
+                    `;
+                }).join('');
                 
             } catch (error) {
                 showAlert('❌ Ошибка загрузки истории: ' + error.message, 'error');
