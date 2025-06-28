@@ -212,7 +212,7 @@ const fullGenerations = {
   // Создать новую полную генерацию
   async create(id, data) {
     const result = await pool.query(
-      `INSERT INTO full_generations (id, data) VALUES ($1, $2) RETURNING *`,
+      `INSERT INTO full_generations (id, data) VALUES ($1, $2::jsonb) RETURNING *`,
       [id, JSON.stringify(data)]
     );
     return result.rows[0];
@@ -224,13 +224,14 @@ const fullGenerations = {
       'SELECT * FROM full_generations WHERE id = $1',
       [id]
     );
-    return result.rows[0] ? JSON.parse(result.rows[0].data) : null;
+    // PostgreSQL возвращает JSONB уже как объект
+    return result.rows[0] ? result.rows[0].data : null;
   },
 
   // Обновить полную генерацию
   async update(id, data) {
     const result = await pool.query(
-      'UPDATE full_generations SET data = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2 RETURNING *',
+      'UPDATE full_generations SET data = $1::jsonb, updated_at = CURRENT_TIMESTAMP WHERE id = $2 RETURNING *',
       [JSON.stringify(data), id]
     );
     return result.rows[0];
@@ -256,7 +257,7 @@ const fullGenerations = {
     );
     
     return result.rows.map(row => {
-      const data = JSON.parse(row.data);
+      const data = row.data; // Уже объект
       return {
         full_generation_id: data.id,
         prompt: data.prompt,
@@ -278,7 +279,7 @@ const fullGenerations = {
     );
     
     return result.rows.map(row => {
-      const data = JSON.parse(row.data);
+      const data = row.data; // Уже объект
       return {
         full_generation_id: data.id,
         user: data.username,
