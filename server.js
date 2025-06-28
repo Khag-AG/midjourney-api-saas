@@ -158,14 +158,14 @@ async function getMidjourneyClient(user) {
 }
 
 // Функция для ожидания постоянного URL вместо временного
-async function waitForPermanentAttachment(messageId, channelId, salaiToken, maxAttempts = 20) {
+async function waitForPermanentAttachment(messageId, channelId, salaiToken, maxAttempts = 30) {
   console.log('⏳ Ожидаем постоянное вложение...');
   
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
     try {
       // Ждем 10 секунд между попытками
       if (attempt > 0) {
-        await new Promise(resolve => setTimeout(resolve, 10000));
+        await new Promise(resolve => setTimeout(resolve, 15000));
       }
       
       const response = await fetch(`https://discord.com/api/v9/channels/${channelId}/messages/${messageId}`, {
@@ -484,7 +484,7 @@ app.post('/api/generate', validateApiKey, async (req, res) => {
             result.id,
             user.channel_id,
             user.salai_token,
-            20 // 20 попыток по 10 секунд = 3+ минуты
+            40 // 40 попыток по 10 секунд = 3+ минуты
           );
           
           if (permanentResult.success) {
