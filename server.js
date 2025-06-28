@@ -1,12 +1,13 @@
-// server.js - Супер продвинутая версия с асинхронной генерацией и полной генерацией
+// server.js - Супер продвинутая версия с PostgreSQL и исправлениями для временных вложений
 const express = require('express');
 const { Midjourney } = require('midjourney');
-const fs = require('fs').promises;
 const path = require('path');
+const { initDatabase, users, history, fullGenerations } = require('./database');
 require('dotenv').config();
 
 const app = express();
 const activeTasks = new Map(); // Хранилище активных задач
+const userSessions = new Map(); // Кеш Midjourney клиентов
 
 app.use(express.json());
 app.use(express.static('public'));
@@ -62,182 +63,64 @@ console.error = function(...args) {
   originalConsoleError.apply(console, cleanArgs);
 };
 
-// Директория для хранения данных
-const DATA_DIR = process.env.DATA_PATH || path.join(__dirname, 'data');
-console.log('📁 Используется директория данных:', DATA_DIR);
-
-// Инициализация директории данных
-async function initDataDir() {
-  try {
-    await fs.mkdir(DATA_DIR, { recursive: true });
-  } catch (error) {
-    console.error('Error creating data directory:', error);
-  }
-}
-
-// Файловая база данных
-class FileDB {
-  constructor(filename) {
-    this.filepath = path.join(DATA_DIR, filename);
-    this.data = new Map();
-  }
-
-  async load() {
-    try {
-      const content = await fs.readFile(this.filepath, 'utf8');
-      const parsed = JSON.parse(content);
-      this.data = new Map(parsed);
-    } catch (error) {
-      this.data = new Map();
-    }
-  }
-
-  async save() {
-    try {
-      const content = JSON.stringify([...this.data]);
-      await fs.writeFile(this.filepath, content, 'utf8');
-    } catch (error) {
-      console.error('Error saving to file:', error);
-    }
-  }
-
-  
-
-  get(key) { return this.data.get(key); }
-  set(key, value) { this.data.set(key, value); this.save(); return this; }
-  has(key) { return this.data.has(key); }
-  delete(key) { const result = this.data.delete(key); this.save(); return result; }
-  get size() { return this.data.size; }
-  entries() { return this.data.entries(); }
-  values() { return Array.from(this.data.values()); }
-}
-
-// Инициализация баз данных
-const users = new FileDB('users.json');
-const userUsage = new FileDB('usage.json');
-const generationHistory = new FileDB('history.json');
-const fullGenerations = new FileDB('full_generations.json');
-const userSessions = new Map();
-
-// Измените функцию init на:
-async function init() {
-  await initDataDir();
-  await users.load();
-  await userUsage.load();
-  await generationHistory.load();
-  await fullGenerations.load();
-  await restoreFromBackup(); // Добавьте эту строку
-  console.log(`📊 Загружено ${users.size} пользователей из базы данных`);
-}
-
-// Автосохранение каждые 5 минут
-setInterval(async () => {
-  console.log('💾 Автосохранение данных...');
-  await users.save();
-  await userUsage.save();
-  await generationHistory.save();
-  await fullGenerations.save();
-  console.log('✅ Данные сохранены');
-}, 300000); // 5 минут
-
-// Восстановление из бэкапа при старте
-async function restoreFromBackup() {
-  try {
-    const backupPath = path.join(__dirname, 'data-backup.json');
-    const backup = JSON.parse(await fs.readFile(backupPath, 'utf8'));
-    
-    if (backup.users && users.size === 0) {
-      backup.users.forEach(([key, value]) => users.set(key, value));
-      await users.save();
-      console.log('✅ Пользователи восстановлены из бэкапа');
-    }
-  } catch (error) {
-    console.log('📋 Бэкап не найден или пуст');
-  }
-}
-
-// Функция для экспорта текущих данных
-async function exportCurrentData() {
-  const backup = {
-    users: [...users.data],
-    usage: [...userUsage.data],
-    timestamp: new Date().toISOString()
-  };
-  
-  try {
-    await fs.writeFile(
-      path.join(__dirname, 'data-backup.json'), 
-      JSON.stringify(backup, null, 2)
-    );
-    console.log('📦 Бэкап создан: data-backup.json');
-  } catch (error) {
-    console.error('❌ Ошибка создания бэкапа:', error);
-  }
-}
-
 // Функция генерации API ключей
 function generateApiKey() {
   return 'mj_' + Math.random().toString(36).substring(2, 15) + Math.random().toString(36).substring(2, 15);
 }
 
 // Middleware для проверки API ключей
-function validateApiKey(req, res, next) {
+async function validateApiKey(req, res, next) {
   const apiKey = req.headers['x-api-key'] || req.headers['authorization']?.replace('Bearer ', '');
   
   if (!apiKey) {
     return res.status(401).json({ error: 'API ключ обязателен. Добавьте заголовок X-API-Key' });
   }
   
-  const user = users.get(apiKey);
-  if (!user) {
-    return res.status(401).json({ error: 'Недействительный API ключ' });
-  }
-  
-  // Проверяем статус пользователя
-  if (user.status === 'blocked') {
-    return res.status(403).json({ error: 'Ваш аккаунт заблокирован' });
-  }
-  
-  // Для админов пропускаем проверку лимитов
-  if (user.role === 'admin') {
+  try {
+    const user = await users.getByApiKey(apiKey);
+    
+    if (!user) {
+      return res.status(401).json({ error: 'Недействительный API ключ' });
+    }
+    
+    // Проверяем статус пользователя
+    if (user.is_blocked) {
+      return res.status(403).json({ error: 'Ваш аккаунт заблокирован' });
+    }
+    
+    // Для админов пропускаем проверку лимитов
+    if (user.is_admin) {
+      req.user = user;
+      req.apiKey = apiKey;
+      return next();
+    }
+    
+    // Проверяем лимиты для обычных пользователей
+    if (user.usage_count >= user.monthly_limit) {
+      return res.status(429).json({ 
+        error: 'Превышен месячный лимит генераций',
+        limit: user.monthly_limit,
+        used: user.usage_count,
+        resetDate: user.reset_date
+      });
+    }
+    
     req.user = user;
     req.apiKey = apiKey;
-    return next();
+    next();
+  } catch (error) {
+    console.error('Auth error:', error);
+    res.status(500).json({ error: 'Authentication error' });
   }
-  
-  // Проверяем лимиты для обычных пользователей
-  const currentUsage = userUsage.get(apiKey) || { count: 0, resetDate: new Date() };
-  
-  // Проверяем нужно ли сбросить счетчик (раз в месяц)
-  const now = new Date();
-  const resetDate = new Date(currentUsage.resetDate);
-  if (now.getMonth() !== resetDate.getMonth() || now.getFullYear() !== resetDate.getFullYear()) {
-    currentUsage.count = 0;
-    currentUsage.resetDate = now;
-    userUsage.set(apiKey, currentUsage);
-  }
-  
-  if (currentUsage.count >= user.monthlyLimit) {
-    return res.status(429).json({ 
-      error: 'Превышен месячный лимит генераций',
-      limit: user.monthlyLimit,
-      used: currentUsage.count,
-      resetDate: currentUsage.resetDate
-    });
-  }
-  
-  req.user = user;
-  req.apiKey = apiKey;
-  next();
 }
 
 // Функция создания Midjourney клиента
 async function getMidjourneyClient(user) {
   try {
     const client = new Midjourney({
-      ServerId: user.serverId,
-      ChannelId: user.channelId,
-      SalaiToken: user.salaiToken,
+      ServerId: user.server_id,
+      ChannelId: user.channel_id,
+      SalaiToken: user.salai_token,
       Debug: false,
       Ws: true
     });
@@ -274,217 +157,267 @@ async function getMidjourneyClient(user) {
   }
 }
 
+// Функция для ожидания постоянного URL вместо временного
+async function waitForPermanentAttachment(messageId, channelId, salaiToken, maxAttempts = 20) {
+  console.log('⏳ Ожидаем постоянное вложение...');
+  
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    try {
+      // Ждем 10 секунд между попытками
+      if (attempt > 0) {
+        await new Promise(resolve => setTimeout(resolve, 10000));
+      }
+      
+      const response = await fetch(`https://discord.com/api/v9/channels/${channelId}/messages/${messageId}`, {
+        headers: {
+          'Authorization': salaiToken,
+          'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36'
+        }
+      });
+      
+      if (response.ok) {
+        const message = await response.json();
+        
+        if (message.attachments && message.attachments.length > 0) {
+          const attachment = message.attachments[0];
+          
+          // Проверяем, что вложение не временное
+          if (!attachment.url.includes('ephemeral')) {
+            console.log(`✅ Получено постоянное вложение на попытке ${attempt + 1}`);
+            return {
+              success: true,
+              url: attachment.url,
+              proxy_url: attachment.proxy_url
+            };
+          } else {
+            console.log(`⏳ Попытка ${attempt + 1}/${maxAttempts}: все еще временное вложение`);
+          }
+        }
+      }
+    } catch (error) {
+      console.error(`Ошибка при попытке ${attempt + 1}:`, error.message);
+    }
+  }
+  
+  return {
+    success: false,
+    error: 'Не удалось получить постоянное вложение'
+  };
+}
+
 // === API ENDPOINTS ===
 
-// Эндпоинт для создания бэкапа
-app.get('/admin/backup', async (req, res) => {
-  await exportCurrentData();
-  res.json({ success: true, message: 'Backup created' });
-});
-
 // Проверка статуса системы
-app.get('/health', (req, res) => {
-  const totalUsers = users.size;
-  const activeUsers = Array.from(users.entries()).filter(([_, user]) => user.status === 'active').length;
-  const blockedUsers = Array.from(users.entries()).filter(([_, user]) => user.status === 'blocked').length;
-  const adminUsers = Array.from(users.entries()).filter(([_, user]) => user.role === 'admin').length;
-  
-  res.json({
-    status: 'ok',
-    stats: {
-      totalUsers,
-      activeUsers,
-      blockedUsers,
-      adminUsers,
-      activeSessions: userSessions.size,
-      activeTasks: activeTasks.size
-    },
-    timestamp: new Date().toISOString(),
-    environment: process.env.NODE_ENV || 'development'
-  });
+app.get('/health', async (req, res) => {
+  try {
+    const totalUsers = await users.count();
+    const stats = await users.getStats();
+    
+    res.json({
+      status: 'ok',
+      database: 'PostgreSQL',
+      stats: {
+        totalUsers: totalUsers,
+        activeUsers: stats.activeUsers,
+        blockedUsers: stats.blockedUsers,
+        adminUsers: stats.adminUsers,
+        activeSessions: userSessions.size,
+        activeTasks: activeTasks.size
+      },
+      timestamp: new Date().toISOString(),
+      environment: process.env.NODE_ENV || 'development'
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
 });
 
 // ADMIN: Создание нового пользователя
 app.post('/admin/users', async (req, res) => {
-  const { serverId, channelId, salaiToken, monthlyLimit = 100, userEmail, role = 'user' } = req.body;
+  const { server_id, channel_id, salai_token, monthly_limit = 100, username, is_admin = false } = req.body;
   
-  if (!serverId || !channelId || !salaiToken || !userEmail) {
+  if (!server_id || !channel_id || !salai_token || !username) {
     return res.status(400).json({
-      error: 'Требуются: serverId, channelId, salaiToken, userEmail'
+      error: 'Требуются: server_id, channel_id, salai_token, username'
     });
   }
   
-  const apiKey = generateApiKey();
-  const user = {
-    apiKey,
-    serverId,
-    channelId,
-    salaiToken,
-    monthlyLimit: role === 'admin' ? -1 : monthlyLimit,
-    userEmail,
-    role,
-    createdAt: new Date().toISOString(),
-    status: 'active'
-  };
-  
-  users.set(apiKey, user);
-  userUsage.set(apiKey, { count: 0, resetDate: new Date() });
-  
-  console.log(`👤 Новый ${role} создан: ${userEmail}`);
-  
-  res.json({
-    success: true,
-    apiKey: apiKey,
-    user: {
-      email: userEmail,
-      monthlyLimit: user.monthlyLimit,
-      role: user.role,
-      status: 'active'
-    }
-  });
+  try {
+    const apiKey = generateApiKey();
+    const user = await users.create({
+      api_key: apiKey,
+      username,
+      server_id,
+      channel_id,
+      salai_token,
+      monthly_limit: is_admin ? -1 : monthly_limit,
+      is_admin
+    });
+    
+    console.log(`👤 Новый ${is_admin ? 'админ' : 'пользователь'} создан: ${username}`);
+    
+    res.json({
+      success: true,
+      apiKey: apiKey,
+      user: {
+        username: username,
+        monthlyLimit: user.monthly_limit,
+        is_admin: user.is_admin,
+        status: 'active'
+      }
+    });
+  } catch (error) {
+    console.error('Ошибка создания пользователя:', error);
+    res.status(500).json({ error: error.message });
+  }
 });
 
 // ADMIN: Список всех пользователей
-app.get('/admin/users', (req, res) => {
-  const userList = Array.from(users.entries()).map(([apiKey, user]) => {
-    const usage = userUsage.get(apiKey) || { count: 0, resetDate: new Date() };
-    return {
-      apiKey: apiKey,
-      email: user.userEmail,
-      monthlyLimit: user.monthlyLimit,
-      currentUsage: usage.count,
-      resetDate: usage.resetDate,
-      status: user.status,
-      role: user.role || 'user',
-      createdAt: user.createdAt,
-      serverId: user.serverId,
-      channelId: user.channelId,
+app.get('/admin/users', async (req, res) => {
+  try {
+    const userList = await users.getAll();
+    
+    const formattedUsers = userList.map(user => ({
+      apiKey: user.api_key,
+      username: user.username,
+      monthlyLimit: user.monthly_limit,
+      currentUsage: user.usage_count,
+      resetDate: user.reset_date,
+      status: user.is_blocked ? 'blocked' : 'active',
+      role: user.is_admin ? 'admin' : 'user',
+      createdAt: user.created_at,
+      serverId: user.server_id,
+      channelId: user.channel_id,
       salaiToken: "***hidden***"
-    };
-  });
-  
-  res.json({ users: userList, total: users.size });
+    }));
+    
+    res.json({ users: formattedUsers, total: formattedUsers.length });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
 });
 
 // ADMIN: Получение деталей конкретного пользователя
-app.get('/admin/users/:apiKey', (req, res) => {
+app.get('/admin/users/:apiKey', async (req, res) => {
   const { apiKey } = req.params;
-  const user = users.get(apiKey);
   
-  if (!user) {
-    return res.status(404).json({ error: 'Пользователь не найден' });
+  try {
+    const user = await users.getByApiKey(apiKey);
+    
+    if (!user) {
+      return res.status(404).json({ error: 'Пользователь не найден' });
+    }
+    
+    const userHistory = await history.getByUser(apiKey, 10);
+    
+    res.json({
+      ...user,
+      salai_token: "***hidden***",
+      currentUsage: user.usage_count,
+      resetDate: user.reset_date,
+      history: userHistory
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
   }
-  
-  const usage = userUsage.get(apiKey) || { count: 0, resetDate: new Date() };
-  const history = generationHistory.get(apiKey) || [];
-  
-  res.json({
-    ...user,
-    currentUsage: usage.count,
-    resetDate: usage.resetDate,
-    history: history.slice(-10)
-  });
 });
 
 // ADMIN: Обновление пользователя
-app.put('/admin/users/:apiKey', (req, res) => {
+app.put('/admin/users/:apiKey', async (req, res) => {
   const { apiKey } = req.params;
-  const updates = req.body;
+  const { monthly_limit, is_admin } = req.body;
   
-  const user = users.get(apiKey);
-  if (!user) {
-    return res.status(404).json({ error: 'Пользователь не найден' });
-  }
-  
-  const allowedFields = ['monthlyLimit', 'status', 'role', 'userEmail'];
-  const updatedUser = { ...user };
-  
-  allowedFields.forEach(field => {
-    if (updates[field] !== undefined) {
-      updatedUser[field] = updates[field];
+  try {
+    const user = await users.getByApiKey(apiKey);
+    if (!user) {
+      return res.status(404).json({ error: 'Пользователь не найден' });
     }
-  });
-  
-  if (updatedUser.role === 'admin') {
-    updatedUser.monthlyLimit = -1;
+    
+    if (monthly_limit !== undefined) {
+      await users.updateLimit(apiKey, is_admin ? -1 : monthly_limit);
+    }
+    
+    const updatedUser = await users.getByApiKey(apiKey);
+    
+    console.log(`✏️ Пользователь обновлен: ${updatedUser.username}`);
+    
+    res.json({ success: true, user: updatedUser });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
   }
-  
-  users.set(apiKey, updatedUser);
-  
-  console.log(`✏️ Пользователь обновлен: ${updatedUser.userEmail}`);
-  
-  res.json({ success: true, user: updatedUser });
 });
 
 // ADMIN: Удаление пользователя
-app.delete('/admin/users/:apiKey', (req, res) => {
+app.delete('/admin/users/:apiKey', async (req, res) => {
   const { apiKey } = req.params;
   
-  if (!users.has(apiKey)) {
-    return res.status(404).json({ error: 'Пользователь не найден' });
+  try {
+    const user = await users.getByApiKey(apiKey);
+    if (!user) {
+      return res.status(404).json({ error: 'Пользователь не найден' });
+    }
+    
+    await users.delete(apiKey);
+    userSessions.delete(apiKey);
+    
+    console.log(`🗑️ Пользователь удален: ${user.username}`);
+    
+    res.json({ success: true, message: 'Пользователь удален' });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
   }
-  
-  const user = users.get(apiKey);
-  users.delete(apiKey);
-  userUsage.delete(apiKey);
-  generationHistory.delete(apiKey);
-  userSessions.delete(apiKey);
-  
-  console.log(`🗑️ Пользователь удален: ${user.userEmail}`);
-  
-  res.json({ success: true, message: 'Пользователь удален' });
 });
 
 // ADMIN: Сброс лимитов пользователя
-app.post('/admin/users/:apiKey/reset', (req, res) => {
+app.post('/admin/users/:apiKey/reset', async (req, res) => {
   const { apiKey } = req.params;
   
-  if (!users.has(apiKey)) {
-    return res.status(404).json({ error: 'Пользователь не найден' });
+  try {
+    const user = await users.getByApiKey(apiKey);
+    if (!user) {
+      return res.status(404).json({ error: 'Пользователь не найден' });
+    }
+    
+    await users.resetUsage(apiKey);
+    
+    console.log(`🔄 Лимиты сброшены для: ${user.username}`);
+    
+    res.json({ success: true, message: 'Лимиты сброшены' });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
   }
-  
-  userUsage.set(apiKey, { count: 0, resetDate: new Date() });
-  
-  console.log(`🔄 Лимиты сброшены для: ${users.get(apiKey).userEmail}`);
-  
-  res.json({ success: true, message: 'Лимиты сброшены' });
 });
 
 // ADMIN: Блокировка/разблокировка пользователя
-app.post('/admin/users/:apiKey/toggle-block', (req, res) => {
+app.post('/admin/users/:apiKey/toggle-block', async (req, res) => {
   const { apiKey } = req.params;
-  const user = users.get(apiKey);
   
-  if (!user) {
-    return res.status(404).json({ error: 'Пользователь не найден' });
+  try {
+    const user = await users.getByApiKey(apiKey);
+    if (!user) {
+      return res.status(404).json({ error: 'Пользователь не найден' });
+    }
+    
+    const newStatus = !user.is_blocked;
+    await users.setBlocked(apiKey, newStatus);
+    
+    console.log(`${newStatus ? '🔒' : '🔓'} Пользователь ${user.username} ${newStatus ? 'заблокирован' : 'разблокирован'}`);
+    
+    res.json({ success: true, status: newStatus ? 'blocked' : 'active' });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
   }
-  
-  user.status = user.status === 'blocked' ? 'active' : 'blocked';
-  users.set(apiKey, user);
-  
-  console.log(`${user.status === 'blocked' ? '🔒' : '🔓'} Пользователь ${user.userEmail} ${user.status === 'blocked' ? 'заблокирован' : 'разблокирован'}`);
-  
-  res.json({ success: true, status: user.status });
 });
 
 // ADMIN: История генераций
-app.get('/admin/history', (req, res) => {
-  const allHistory = [];
-  
-  generationHistory.entries().forEach(([apiKey, history]) => {
-    const user = users.get(apiKey);
-    history.forEach(item => {
-      allHistory.push({
-        ...item,
-        userEmail: user?.userEmail || 'Deleted User',
-        apiKey: apiKey.substring(0, 8) + '...'
-      });
-    });
-  });
-  
-  allHistory.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
-  
-  res.json({ history: allHistory.slice(0, 100) });
+app.get('/admin/history', async (req, res) => {
+  try {
+    const allHistory = await history.getAll(100);
+    
+    res.json({ history: allHistory });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
 });
 
 // USER: Генерация изображения (АСИНХРОННАЯ ВЕРСИЯ)
@@ -503,13 +436,13 @@ app.post('/api/generate', validateApiKey, async (req, res) => {
     // Генерируем уникальный task_id
     const taskId = 'task_' + Date.now() + '_' + Math.random().toString(36).substring(7);
     
-    console.log(`🎨 Запуск генерации для ${user.userEmail}: "${prompt}" (Task: ${taskId})`);
+    console.log(`🎨 Запуск генерации для ${user.username}: "${prompt}" (Task: ${taskId})`);
     
     // Сохраняем начальный статус
     activeTasks.set(taskId, {
       status: 'processing',
       prompt: prompt,
-      user: user.userEmail,
+      user: user.username,
       apiKey: apiKey,
       startedAt: new Date().toISOString()
     });
@@ -532,7 +465,7 @@ app.post('/api/generate', validateApiKey, async (req, res) => {
         }
         
         const result = await client.Imagine(prompt, (uri, progress) => {
-          console.log(`${user.userEmail} - Прогресс: ${progress}`);
+          console.log(`${user.username} - Прогресс: ${progress}`);
           const task = activeTasks.get(taskId);
           if (task) {
             task.progress = progress;
@@ -540,89 +473,55 @@ app.post('/api/generate', validateApiKey, async (req, res) => {
           }
         });
         
+        // Проверяем на временное вложение и ждем постоянное
+        let finalUrl = result.uri;
+        let hash = result.hash || extractHashFromUrl(result.uri);
+        
+        if (result.uri.includes('ephemeral')) {
+          console.log('⚠️ Получено временное вложение, ждем постоянное...');
+          
+          const permanentResult = await waitForPermanentAttachment(
+            result.id,
+            user.channel_id,
+            user.salai_token,
+            20 // 20 попыток по 10 секунд = 3+ минуты
+          );
+          
+          if (permanentResult.success) {
+            finalUrl = permanentResult.url;
+            // Обновляем hash из нового URL
+            hash = extractHashFromUrl(finalUrl);
+          } else {
+            console.warn('⚠️ Не удалось получить постоянное вложение, используем временное');
+          }
+        }
+        
         // Обновляем статус на completed
         activeTasks.set(taskId, {
           status: 'completed',
           prompt: prompt,
-          image_url: result.uri,
+          image_url: finalUrl,
           midjourney_id: result.id,
-          hash: result.hash || extractHashFromUrl(result.uri),
-          user: user.userEmail,
+          hash: hash,
+          user: user.username,
           apiKey: apiKey,
-          completedAt: new Date().toISOString()
+          completedAt: new Date().toISOString(),
+          is_ephemeral: finalUrl.includes('ephemeral')
         });
         
         // Обновляем счетчики и историю
-        let currentUsage = userUsage.get(apiKey) || { count: 0, resetDate: new Date() };
-        if (user.role !== 'admin') {
-          currentUsage.count += 1;
-          userUsage.set(apiKey, currentUsage);
+        if (!user.is_admin) {
+          await users.incrementUsage(apiKey);
         }
         
-        const historyItem = {
-          prompt,
-          imageUrl: result.uri,
+        await history.add(apiKey, prompt, JSON.stringify({
+          imageUrl: finalUrl,
           taskId: result.id,
-          hash: result.hash || extractHashFromUrl(result.uri),
-          timestamp: new Date().toISOString()
-        };
-        
-        const history = generationHistory.get(apiKey) || [];
-        history.push(historyItem);
-        generationHistory.set(apiKey, history);
+          hash: hash
+        }));
         
         console.log(`✅ Генерация завершена: ${taskId} -> ${result.id}`);
-        console.log(`📎 Тип вложения: ${result.uri.includes('ephemeral') ? 'ВРЕМЕННОЕ' : 'ПОСТОЯННОЕ'}`);
-
-        // Если временное вложение, ждем появления постоянного
-        if (result.uri.includes('ephemeral')) {
-          console.log('⚠️ Получено временное вложение, ждем постоянное...');
-          
-          // Ждем до 30 секунд для получения постоянного вложения
-          for (let i = 0; i < 10; i++) {
-            await new Promise(resolve => setTimeout(resolve, 15000));
-            
-            try {
-              const checkResponse = await fetch(`https://discord.com/api/v9/channels/${user.channelId}/messages/${result.id}`, {
-                headers: {
-                  'Authorization': user.salaiToken,
-                  'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36'
-                }
-              });
-              
-              if (checkResponse.ok) {
-                const message = await checkResponse.json();
-                if (message.attachments && message.attachments.length > 0) {
-                  const attachment = message.attachments[0];
-                  if (!attachment.url.includes('ephemeral')) {
-                    console.log('✅ Получено постоянное вложение!');
-                    result.uri = attachment.url;
-                    
-                    // Обновляем в активной задаче
-                    const task = activeTasks.get(taskId);
-                    if (task) {
-                      task.image_url = attachment.url;
-                      activeTasks.set(taskId, task);
-                    }
-                    
-                    // Обновляем в истории
-                    const historyIndex = history.length - 1;
-                    if (historyIndex >= 0) {
-                      history[historyIndex].imageUrl = attachment.url;
-                      generationHistory.set(apiKey, history);
-                    }
-                    
-                    break;
-                  }
-                }
-              }
-            } catch (error) {
-              console.log(`Попытка ${i + 1}/10 получить постоянное вложение...`);
-            }
-          }
-        }
-
-        console.log('✅ Изображение готово для upscale');
+        console.log(`📎 Тип вложения: ${finalUrl.includes('ephemeral') ? 'ВРЕМЕННОЕ' : 'ПОСТОЯННОЕ'}`);
         
       } catch (error) {
         console.error(`❌ Ошибка генерации для ${taskId}:`, error.message);
@@ -630,7 +529,7 @@ app.post('/api/generate', validateApiKey, async (req, res) => {
           status: 'failed',
           error: error.message,
           prompt: prompt,
-          user: user.userEmail,
+          user: user.username,
           apiKey: apiKey,
           failedAt: new Date().toISOString()
         });
@@ -659,7 +558,7 @@ app.get('/api/task/:taskId', validateApiKey, (req, res) => {
   }
   
   // Проверяем что это задача текущего пользователя
-  if (task.apiKey !== req.apiKey && req.user.role !== 'admin') {
+  if (task.apiKey !== req.apiKey && !req.user.is_admin) {
     return res.status(403).json({
       error: 'Доступ запрещен'
     });
@@ -675,11 +574,11 @@ app.get('/api/task/:taskId', validateApiKey, (req, res) => {
     response.image_url = task.image_url;
     response.midjourney_id = task.midjourney_id;
     response.task_id = task.midjourney_id;  // Для совместимости с upscale
-    response.is_ephemeral = task.image_url && task.image_url.includes('ephemeral');
+    response.is_ephemeral = task.is_ephemeral;
     
     // Если изображение все еще временное, добавляем рекомендацию подождать
     if (response.is_ephemeral) {
-      response.recommendation = 'Image has ephemeral attachment. Wait 30-60 seconds before upscale.';
+      response.recommendation = 'Image has ephemeral attachment. Please wait a moment and try again.';
     }
     
     // Удаляем выполненную задачу через 5 минут
@@ -697,7 +596,7 @@ app.get('/api/task/:taskId', validateApiKey, (req, res) => {
 
 // ADMIN: Список всех активных задач
 app.get('/api/tasks', validateApiKey, (req, res) => {
-  if (req.user.role !== 'admin') {
+  if (!req.user.is_admin) {
     return res.status(403).json({ error: 'Только для администраторов' });
   }
   
@@ -793,42 +692,33 @@ async function waitForUpscaleResult(channelId, salaiToken, originalMessageId, in
 // Исправленная функция upscale с поддержкой временных вложений
 async function customUpscale(messageId, index, hash, user) {
   console.log('🚀 Используем собственную реализацию upscale');
-  // Детальная диагностика
-  console.log('🔍 Диагностика upscale:');
-  console.log(`  Message ID: ${messageId}`);
-  console.log(`  Index: ${index}`);
-  console.log(`  Hash: ${hash}`);
-  console.log(`  Server ID: ${user.serverId}`);
-  console.log(`  Channel ID: ${user.channelId}`);
-
-  // Проверяем возраст сообщения
-  const messageTimestamp = getTimestampFromSnowflake(messageId);
-  const messageAge = Date.now() - messageTimestamp;
-  console.log(`  Возраст сообщения: ${Math.floor(messageAge / 1000)} секунд`);
-  console.log(`  Максимальный возраст: 900 секунд (15 минут)`);
-
-  if (messageAge > 900000) { // 15 минут
-    console.log('  ⚠️ ВНИМАНИЕ: Сообщение слишком старое для upscale!');
-  }
   console.log('📋 Параметры upscale:', {
     messageId,
     index,
     hash,
-    serverId: user.serverId,
-    channelId: user.channelId,
-    userEmail: user.userEmail
+    serverId: user.server_id,
+    channelId: user.channel_id,
+    username: user.username
   });
   
+  // Проверяем возраст сообщения
+  const messageTimestamp = getTimestampFromSnowflake(messageId);
+  const messageAge = Date.now() - messageTimestamp;
+  console.log(`  Возраст сообщения: ${Math.floor(messageAge / 1000)} секунд`);
+
+  if (messageAge > 900000) { // 15 минут
+    throw new Error('Message too old for upscale (max 15 minutes)');
+  }
+  
   // Для временных вложений нужен особый подход
-  // Пробуем несколько вариантов custom_id
   const customIds = [
-  `MJ::JOB::upsample::${index}::${hash}`,
-  `MJ::JOB::upsample_v6::${index}::${hash}::SOLO`,
-  `MJ::JOB::upsample_v5::${index}::${hash}`,
-  `MJ::JOB::upsample_v6_2x::${index}::${hash}::SOLO`,
-  `MJ::JOB::high_variation::${index}::${hash}::1`,
-  `MJ::JOB::low_variation::${index}::${hash}::1`
-];
+    `MJ::JOB::upsample::${index}::${hash}`,
+    `MJ::JOB::upsample_v6::${index}::${hash}::SOLO`,
+    `MJ::JOB::upsample_v5::${index}::${hash}`,
+    `MJ::JOB::upsample_v6_2x::${index}::${hash}::SOLO`,
+    `MJ::JOB::high_variation::${index}::${hash}::1`,
+    `MJ::JOB::low_variation::${index}::${hash}::1`
+  ];
   
   let lastError = null;
   
@@ -839,8 +729,8 @@ async function customUpscale(messageId, index, hash, user) {
     const payload = {
       type: 3,
       nonce: nonce,
-      guild_id: user.serverId,
-      channel_id: user.channelId,
+      guild_id: user.server_id,
+      channel_id: user.channel_id,
       message_flags: 0,
       message_id: messageId,
       application_id: '936929561302675456',
@@ -857,7 +747,7 @@ async function customUpscale(messageId, index, hash, user) {
       const response = await fetch('https://discord.com/api/v9/interactions', {
         method: 'POST',
         headers: {
-          'Authorization': user.salaiToken,
+          'Authorization': user.salai_token,
           'Content-Type': 'application/json',
           'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) discord/0.0.309 Chrome/120.0.6099.291 Electron/28.2.10 Safari/537.36',
           'Accept': '*/*',
@@ -865,7 +755,7 @@ async function customUpscale(messageId, index, hash, user) {
           'Cache-Control': 'no-cache',
           'Origin': 'https://discord.com',
           'Pragma': 'no-cache',
-          'Referer': `https://discord.com/channels/${user.serverId}/${user.channelId}`,
+          'Referer': `https://discord.com/channels/${user.server_id}/${user.channel_id}`,
           'Sec-Ch-Ua': '"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"',
           'Sec-Ch-Ua-Mobile': '?0',
           'Sec-Ch-Ua-Platform': '"macOS"',
@@ -892,7 +782,7 @@ async function customUpscale(messageId, index, hash, user) {
         console.log('✅ Команда upscale принята Discord!');
         
         // Увеличиваем время ожидания результата
-        const result = await waitForUpscaleResult(user.channelId, user.salaiToken, messageId, index, 45);
+        const result = await waitForUpscaleResult(user.channel_id, user.salai_token, messageId, index, 45);
         
         if (result.success) {
           return { 
@@ -905,7 +795,13 @@ async function customUpscale(messageId, index, hash, user) {
         throw new Error(result.error || 'Failed to get upscale result');
       } else if (statusCode === 404) {
         lastError = 'Message not found';
-        continue; // Пробуем следующий custom_id
+        continue;
+      } else if (statusCode === 429) {
+        // Rate limit - ждем и пробуем снова
+        const retryAfter = JSON.parse(responseText).retry_after || 1;
+        console.log(`⏳ Rate limit, ждем ${retryAfter} секунд...`);
+        await new Promise(resolve => setTimeout(resolve, retryAfter * 1000));
+        continue;
       } else {
         lastError = `Discord API error: ${statusCode} - ${responseText}`;
         continue;
@@ -959,7 +855,7 @@ app.post('/api/upscale', validateApiKey, async (req, res) => {
       });
     }
     
-    console.log(`🔍 Upscale для ${user.userEmail}: задача ${task_id}, картинка ${idx}`);
+    console.log(`🔍 Upscale для ${user.username}: задача ${task_id}, картинка ${idx}`);
     
     // Проверяем возраст сообщения
     const messageAge = Date.now() - getTimestampFromSnowflake(task_id);
@@ -979,23 +875,40 @@ app.post('/api/upscale', validateApiKey, async (req, res) => {
     );
     
     // Если не нашли в активных, ищем в истории
-    const history = generationHistory.get(apiKey) || [];
-    const originalTask = activeTask || history.find(item => item.taskId === task_id);
+    let hash = null;
+    let imageUrl = null;
     
-    if (!originalTask || !(originalTask.imageUrl || originalTask.image_url)) {
+    if (activeTask) {
+      imageUrl = activeTask.image_url;
+      hash = activeTask.hash;
+    } else {
+      // Ищем в БД
+      const historyRecords = await history.getByUser(apiKey, 50);
+      const record = historyRecords.find(h => {
+        try {
+          const result = JSON.parse(h.result);
+          return result.taskId === task_id;
+        } catch {
+          return false;
+        }
+      });
+      
+      if (record) {
+        const result = JSON.parse(record.result);
+        imageUrl = result.imageUrl;
+        hash = result.hash;
+      }
+    }
+    
+    if (!imageUrl) {
       return res.status(404).json({
         error: 'Задача не найдена. Сначала сгенерируйте изображение.',
         details: 'Убедитесь, что используете правильный task_id из результата генерации'
       });
     }
     
-    const imageUrl = originalTask.imageUrl || originalTask.image_url;
-    
-    // Сначала проверяем, есть ли hash в задаче
-    let hash = originalTask.hash;
-    
-    // Если нет, извлекаем из URL
-    if (!hash && imageUrl) {
+    // Если нет hash, извлекаем из URL
+    if (!hash) {
       hash = extractHashFromUrl(imageUrl);
     }
     
@@ -1010,14 +923,32 @@ app.post('/api/upscale', validateApiKey, async (req, res) => {
     console.log(`📌 Извлечен hash: ${hash}`);
     console.log(`🔗 URL изображения: ${imageUrl}`);
     
-    // Увеличиваем задержку для временных вложений
+    // Если вложение временное, сначала пробуем получить постоянное
     if (imageUrl.includes('ephemeral')) {
-      console.log('⚠️ Обнаружено временное вложение, увеличиваем задержку...');
-      await new Promise(resolve => setTimeout(resolve, 20000)); // 20 секунд для временных
-    } else {
-      console.log('⏳ Ждем 2 секунды перед upscale...');
-      await new Promise(resolve => setTimeout(resolve, 10000)); // 10 секунд для обычных
+      console.log('⚠️ Обнаружено временное вложение, пробуем получить постоянное...');
+      
+      const permanentResult = await waitForPermanentAttachment(
+        task_id,
+        user.channel_id,
+        user.salai_token,
+        10 // 10 попыток
+      );
+      
+      if (permanentResult.success) {
+        imageUrl = permanentResult.url;
+        hash = extractHashFromUrl(imageUrl);
+        console.log('✅ Получено постоянное вложение для upscale');
+      } else {
+        console.log('⚠️ Не удалось получить постоянное вложение');
+        return res.status(400).json({
+          error: 'Изображение имеет временное вложение. Подождите несколько минут и попробуйте снова.',
+          suggestion: 'Временные вложения появляются при больших промптах. Попробуйте через 2-3 минуты.'
+        });
+      }
     }
+    
+    console.log('⏳ Ждем перед upscale...');
+    await new Promise(resolve => setTimeout(resolve, 5000));
     
     try {
       // Используем библиотеку midjourney для upscale
@@ -1029,26 +960,21 @@ app.post('/api/upscale', validateApiKey, async (req, res) => {
       
       console.log('📚 Используем библиотеку Midjourney для upscale');
       
-      // Midjourney библиотека принимает hash и флаги
-      const flags = 0; // Default flags
-      const loading = (uri, progress) => {
-        console.log(`Upscale прогресс: ${progress}%`);
-      };
-      
       const result = await client.Upscale({
         index: idx,
         msgId: task_id,
         hash: hash,
-        flags: flags,
-        loading: loading
+        flags: 0,
+        loading: (uri, progress) => {
+          console.log(`Upscale прогресс: ${progress}%`);
+        }
       });
       
       if (!result || !result.uri) {
         throw new Error('Failed to get upscale result from Midjourney library');
       }
       
-      console.log(`✅ Upscale завершен для ${user.userEmail}`);
-      console.log(`📎 URL результата: ${result.uri}`);
+      console.log(`✅ Upscale завершен для ${user.username}`);
       
       const needBinary = req.headers['x-make-binary'] === 'true' || 
                         req.query.binary === 'true' ||
@@ -1119,16 +1045,12 @@ app.post('/api/upscale', validateApiKey, async (req, res) => {
       }
       
       // Сохраняем в историю
-      const historyItem = {
+      await history.add(apiKey, `Upscale #${idx} of ${task_id}`, JSON.stringify({
         action: 'upscale',
         originalTaskId: task_id,
         selectedIndex: idx,
-        imageUrl: result.uri,
-        timestamp: new Date().toISOString()
-      };
-      
-      history.push(historyItem);
-      generationHistory.set(apiKey, history);
+        imageUrl: result.uri
+      }));
       
       res.json({
         success: true,
@@ -1148,7 +1070,14 @@ app.post('/api/upscale', validateApiKey, async (req, res) => {
       try {
         const result = await customUpscale(task_id, idx, hash, user);
         
-        console.log(`✅ Альтернативный upscale завершен для ${user.userEmail}`);
+        console.log(`✅ Альтернативный upscale завершен для ${user.username}`);
+        
+        await history.add(apiKey, `Upscale #${idx} of ${task_id}`, JSON.stringify({
+          action: 'upscale',
+          originalTaskId: task_id,
+          selectedIndex: idx,
+          imageUrl: result.uri
+        }));
         
         res.json({
           success: true,
@@ -1162,13 +1091,12 @@ app.post('/api/upscale', validateApiKey, async (req, res) => {
       } catch (customError) {
         console.error('❌ Ошибка альтернативного метода:', customError.message);
         
-        // Возвращаем ошибку с полезной информацией
         return res.status(400).json({
           success: false,
           error: 'Failed to upscale image. The message might be too old or have temporary attachment.',
           suggestions: [
             'Убедитесь, что с момента генерации прошло менее 15 минут',
-            'Попробуйте подождать 30-60 секунд после генерации',
+            'Если изображение имело временное вложение, подождите 2-3 минуты',
             'Проверьте правильность task_id',
             'Попробуйте сгенерировать изображение заново'
           ],
@@ -1199,8 +1127,8 @@ app.post('/api/generate-full', validateApiKey, async (req, res) => {
       prompt, 
       upscale_all = true, 
       upscale_indexes = [1, 2, 3, 4],
-      wait_before_upscale = 15000, // Задержка перед upscale в мс (15 секунд)
-      parallel_upscale = true // Параллельный или последовательный upscale
+      wait_before_upscale = 30000, // Увеличено до 30 секунд для больших промптов
+      parallel_upscale = false // По умолчанию последовательный для избежания rate limit
     } = req.body;
     
     const { user, apiKey } = req;
@@ -1216,7 +1144,7 @@ app.post('/api/generate-full', validateApiKey, async (req, res) => {
       });
     }
     
-    console.log(`🎨 ПОЛНАЯ генерация для ${user.userEmail}: "${prompt}"`);
+    console.log(`🎨 ПОЛНАЯ генерация для ${user.username}: "${prompt}"`);
     console.log(`📋 Параметры: upscale_all=${upscale_all}, indexes=${upscale_indexes}, parallel=${parallel_upscale}`);
     
     // Генерируем уникальный ID для полной генерации
@@ -1227,14 +1155,14 @@ app.post('/api/generate-full', validateApiKey, async (req, res) => {
       id: fullGenId,
       prompt: prompt,
       status: 'generating',
-      userEmail: user.userEmail,
+      username: user.username,
       apiKey: apiKey,
       startedAt: new Date().toISOString(),
       original: null,
       upscaled: []
     };
     
-    fullGenerations.set(fullGenId, fullGeneration);
+    await fullGenerations.create(fullGenId, fullGeneration);
     
     // Проверяем параметр wait ПЕРЕД отправкой ответа
     if (req.query.wait !== 'true') {
@@ -1260,108 +1188,95 @@ app.post('/api/generate-full', validateApiKey, async (req, res) => {
         }
         
         const generateResult = await client.Imagine(prompt, (uri, progress) => {
-          console.log(`${user.userEmail} - Генерация прогресс: ${progress}%`);
-          const gen = fullGenerations.get(fullGenId);
-          if (gen) {
-            gen.progress = progress;
-            fullGenerations.set(fullGenId, gen);
-          }
+          console.log(`${user.username} - Генерация прогресс: ${progress}%`);
+          fullGenerations.updateProgress(fullGenId, progress);
         });
         
         console.log(`✅ Изображение сгенерировано. ID: ${generateResult.id}`);
         
-        // Обновляем статус с результатом генерации
-        fullGeneration.original = {
-          midjourney_id: generateResult.id,
-          image_url: generateResult.uri,
-          hash: generateResult.hash || extractHashFromUrl(generateResult.uri),
-          generated_at: new Date().toISOString()
-        };
-        fullGeneration.status = 'generated';
-        fullGenerations.set(fullGenId, fullGeneration);
-        
-        // Обновляем счетчики использования
-        if (user.role !== 'admin') {
-          let currentUsage = userUsage.get(apiKey) || { count: 0, resetDate: new Date() };
-          currentUsage.count += 1;
-          userUsage.set(apiKey, currentUsage);
-        }
-        
-        // Добавляем в историю
-        const historyItem = {
-          action: 'full_generation',
-          fullGenId: fullGenId,
-          prompt: prompt,
-          originalImageUrl: generateResult.uri,
-          taskId: generateResult.id,
-          hash: generateResult.hash || extractHashFromUrl(generateResult.uri),
-          timestamp: new Date().toISOString()
-        };
-        
-        const history = generationHistory.get(apiKey) || [];
-        history.push(historyItem);
-        generationHistory.set(apiKey, history);
-        
         // Проверяем и ждем постоянное вложение если нужно
         let finalImageUrl = generateResult.uri;
+        let finalHash = generateResult.hash || extractHashFromUrl(generateResult.uri);
+        
         if (generateResult.uri.includes('ephemeral')) {
           console.log('⚠️ Обнаружено временное вложение, ждем постоянное...');
           
-          for (let i = 0; i < 15; i++) {
-            await new Promise(resolve => setTimeout(resolve, 15000));
-            
-            try {
-              const checkResponse = await fetch(`https://discord.com/api/v9/channels/${user.channelId}/messages/${generateResult.id}`, {
-                headers: {
-                  'Authorization': user.salaiToken,
-                  'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36'
-                }
-              });
-              
-              if (checkResponse.ok) {
-                const message = await checkResponse.json();
-                if (message.attachments && message.attachments.length > 0) {
-                  const attachment = message.attachments[0];
-                  if (!attachment.url.includes('ephemeral')) {
-                    console.log('✅ Получено постоянное вложение!');
-                    finalImageUrl = attachment.url;
-                    fullGeneration.original.image_url = finalImageUrl;
-                    fullGenerations.set(fullGenId, fullGeneration);
-                    break;
-                  }
-                }
-              }
-            } catch (error) {
-              console.log(`Попытка ${i + 1}/15 получить постоянное вложение...`);
+          const permanentResult = await waitForPermanentAttachment(
+            generateResult.id,
+            user.channel_id,
+            user.salai_token,
+            25 // 25 попыток для больших промптов
+          );
+          
+          if (permanentResult.success) {
+            finalImageUrl = permanentResult.url;
+            finalHash = extractHashFromUrl(finalImageUrl);
+            console.log('✅ Получено постоянное вложение!');
+          } else {
+            console.warn('⚠️ Не удалось получить постоянное вложение');
+            // Увеличиваем задержку перед upscale для временных вложений
+            if (upscale_all) {
+              console.log('⏳ Увеличиваем задержку перед upscale до 60 секунд...');
+              fullGeneration.wait_before_upscale = 60000;
             }
           }
         }
         
+        // Обновляем статус с результатом генерации
+        fullGeneration.original = {
+          midjourney_id: generateResult.id,
+          image_url: finalImageUrl,
+          hash: finalHash,
+          generated_at: new Date().toISOString(),
+          is_ephemeral: finalImageUrl.includes('ephemeral')
+        };
+        fullGeneration.status = 'generated';
+        await fullGenerations.update(fullGenId, fullGeneration);
+        
+        // Обновляем счетчики использования
+        if (!user.is_admin) {
+          await users.incrementUsage(apiKey);
+        }
+        
+        // Добавляем в историю
+        await history.add(apiKey, prompt, JSON.stringify({
+          action: 'full_generation',
+          fullGenId: fullGenId,
+          imageUrl: finalImageUrl,
+          taskId: generateResult.id,
+          hash: finalHash
+        }));
+        
         // Шаг 2: Upscale всех вариантов если нужно
         if (upscale_all && upscale_indexes.length > 0) {
           console.log(`🔍 Шаг 2: Upscale вариантов [${upscale_indexes.join(', ')}]...`);
-          console.log(`⏳ Ждем ${wait_before_upscale}мс перед началом upscale...`);
+          
+          // Используем увеличенную задержку для временных вложений
+          const actualWaitTime = fullGeneration.original.is_ephemeral ? 
+            Math.max(wait_before_upscale, 60000) : wait_before_upscale;
+          
+          console.log(`⏳ Ждем ${actualWaitTime}мс перед началом upscale...`);
           
           fullGeneration.status = 'upscaling';
-          fullGenerations.set(fullGenId, fullGeneration);
+          await fullGenerations.update(fullGenId, fullGeneration);
           
-          await new Promise(resolve => setTimeout(resolve, wait_before_upscale));
+          await new Promise(resolve => setTimeout(resolve, actualWaitTime));
           
           if (parallel_upscale) {
-            // Параллельный upscale
+            // Параллельный upscale (осторожно с rate limits!)
             console.log('🚀 Запускаем параллельный upscale...');
             
-            const upscalePromises = upscale_indexes.map(async (index) => {
+            const upscalePromises = upscale_indexes.map(async (index, i) => {
               try {
-                console.log(`  📐 Начинаем upscale варианта ${index}...`);
+                // Добавляем задержку между параллельными запросами
+                await new Promise(resolve => setTimeout(resolve, i * 5000));
                 
-                // Небольшая случайная задержка чтобы не спамить Discord
-                await new Promise(resolve => setTimeout(resolve, 3000 + Math.random() * 5000));
+                console.log(`  📐 Начинаем upscale варианта ${index}...`);
                 
                 const upscaleResult = await customUpscale(
                   generateResult.id,
                   index,
-                  fullGeneration.original.hash,
+                  finalHash,
                   user
                 );
                 
@@ -1379,31 +1294,6 @@ app.post('/api/generate-full', validateApiKey, async (req, res) => {
                 
               } catch (error) {
                 console.error(`  ❌ Ошибка upscale варианта ${index}:`, error.message);
-                
-                // Пробуем альтернативный метод
-                try {
-                  console.log(`  🔄 Пробуем альтернативный метод для варианта ${index}...`);
-                  const altResult = await customUpscale(
-                    generateResult.id, 
-                    index, 
-                    fullGeneration.original.hash, 
-                    user
-                  );
-                  
-                  if (altResult && altResult.uri) {
-                    console.log(`  ✅ Вариант ${index} увеличен альтернативным методом`);
-                    return {
-                      index: index,
-                      success: true,
-                      image_url: altResult.uri,
-                      upscaled_at: new Date().toISOString(),
-                      method: 'alternative'
-                    };
-                  }
-                } catch (altError) {
-                  console.error(`  ❌ Альтернативный метод тоже не сработал:`, altError.message);
-                }
-                
                 return {
                   index: index,
                   success: false,
@@ -1412,10 +1302,8 @@ app.post('/api/generate-full', validateApiKey, async (req, res) => {
               }
             });
             
-            // Ждем завершения всех upscale
             const upscaleResults = await Promise.allSettled(upscalePromises);
             
-            // Обрабатываем результаты
             upscaleResults.forEach((promiseResult, idx) => {
               if (promiseResult.status === 'fulfilled') {
                 fullGeneration.upscaled.push(promiseResult.value);
@@ -1429,18 +1317,17 @@ app.post('/api/generate-full', validateApiKey, async (req, res) => {
             });
             
           } else {
-            // Последовательный upscale
+            // Последовательный upscale (рекомендуется)
             console.log('📝 Запускаем последовательный upscale...');
             
             for (const index of upscale_indexes) {
               try {
                 console.log(`  📐 Upscale варианта ${index}...`);
                 
-                console.log(`  🔄 Используем customUpscale для варианта ${index}...`);
                 const upscaleResult = await customUpscale(
                   generateResult.id,
                   index,
-                  fullGeneration.original.hash,
+                  finalHash,
                   user
                 );
                 
@@ -1456,9 +1343,9 @@ app.post('/api/generate-full', validateApiKey, async (req, res) => {
                   throw new Error('No result from upscale');
                 }
                 
-                // Задержка между upscale
+                // Задержка между upscale для избежания rate limit
                 if (index < upscale_indexes[upscale_indexes.length - 1]) {
-                  await new Promise(resolve => setTimeout(resolve, 10000));
+                  await new Promise(resolve => setTimeout(resolve, 15000));
                 }
                 
               } catch (error) {
@@ -1488,7 +1375,7 @@ app.post('/api/generate-full', validateApiKey, async (req, res) => {
           duration_seconds: Math.floor((new Date() - new Date(fullGeneration.startedAt)) / 1000)
         };
         
-        fullGenerations.set(fullGenId, fullGeneration);
+        await fullGenerations.update(fullGenId, fullGeneration);
         
         console.log(`✨ Полная генерация ${fullGenId} завершена!`);
         console.log(`📊 Статистика: ${fullGeneration.stats.total_images} изображений, ${fullGeneration.stats.successful_upscales} успешных upscale`);
@@ -1499,7 +1386,7 @@ app.post('/api/generate-full', validateApiKey, async (req, res) => {
         fullGeneration.status = 'failed';
         fullGeneration.error = error.message;
         fullGeneration.failedAt = new Date().toISOString();
-        fullGenerations.set(fullGenId, fullGeneration);
+        await fullGenerations.update(fullGenId, fullGeneration);
       }
     })();
     
@@ -1508,13 +1395,13 @@ app.post('/api/generate-full', validateApiKey, async (req, res) => {
       console.log('⏳ Режим ожидания активирован...');
       
       const startTime = Date.now();
-      const maxWaitTime = 240000; // 4 минуты
+      const maxWaitTime = 300000; // 5 минут для больших промптов
       
       // Ждем завершения
       while (Date.now() - startTime < maxWaitTime) {
         await new Promise(resolve => setTimeout(resolve, 2000));
         
-        const currentStatus = fullGenerations.get(fullGenId);
+        const currentStatus = await fullGenerations.get(fullGenId);
         
         if (currentStatus && (currentStatus.status === 'completed' || currentStatus.status === 'failed')) {
           return res.json({
@@ -1531,12 +1418,12 @@ app.post('/api/generate-full', validateApiKey, async (req, res) => {
       }
       
       // Таймаут
-      const finalStatus = fullGenerations.get(fullGenId);
+      const finalStatus = await fullGenerations.get(fullGenId);
       return res.json({
         success: false,
         full_generation_id: fullGenId,
         status: 'timeout',
-        message: 'Generation is taking longer than expected.',
+        message: 'Generation is taking longer than expected. Use the status endpoint to check progress.',
         current_status: finalStatus ? finalStatus.status : 'unknown'
       });
     }
@@ -1551,12 +1438,12 @@ app.post('/api/generate-full', validateApiKey, async (req, res) => {
 });
 
 // USER: Получение статуса полной генерации
-app.get('/api/generate-full/:fullGenId', validateApiKey, (req, res) => {
+app.get('/api/generate-full/:fullGenId', validateApiKey, async (req, res) => {
   try {
     const { fullGenId } = req.params;
     const { user, apiKey } = req;
     
-    const fullGeneration = fullGenerations.get(fullGenId);
+    const fullGeneration = await fullGenerations.get(fullGenId);
     
     if (!fullGeneration) {
       return res.status(404).json({
@@ -1566,7 +1453,7 @@ app.get('/api/generate-full/:fullGenId', validateApiKey, (req, res) => {
     }
     
     // Проверяем доступ
-    if (fullGeneration.apiKey !== apiKey && user.role !== 'admin') {
+    if (fullGeneration.apiKey !== apiKey && !user.is_admin) {
       return res.status(403).json({
         error: 'Доступ запрещен'
       });
@@ -1621,46 +1508,25 @@ app.get('/api/generate-full/:fullGenId', validateApiKey, (req, res) => {
 });
 
 // ADMIN: Список всех полных генераций
-app.get('/api/generate-full', validateApiKey, (req, res) => {
-  if (req.user.role !== 'admin') {
-    // Для обычных пользователей показываем только их генерации
-    const userGenerations = Array.from(fullGenerations.entries())
-      .filter(([_, gen]) => gen.apiKey === req.apiKey)
-      .map(([id, gen]) => ({
-        full_generation_id: id,
-        prompt: gen.prompt,
-        status: gen.status,
-        total_images: gen.stats?.total_images || 0,
-        created_at: gen.startedAt,
-        completed_at: gen.completedAt
-      }));
+app.get('/api/generate-full', validateApiKey, async (req, res) => {
+  try {
+    let generations;
     
-    return res.json({
-      generations: userGenerations,
-      total: userGenerations.length
+    if (!req.user.is_admin) {
+      // Для обычных пользователей показываем только их генерации
+      generations = await fullGenerations.getByUser(req.apiKey);
+    } else {
+      // Для админов показываем все
+      generations = await fullGenerations.getAll(100);
+    }
+    
+    res.json({
+      generations: generations,
+      total: generations.length
     });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
   }
-  
-  // Для админов показываем все
-  const allGenerations = Array.from(fullGenerations.entries())
-    .map(([id, gen]) => ({
-      full_generation_id: id,
-      user: gen.userEmail,
-      prompt: gen.prompt,
-      status: gen.status,
-      total_images: gen.stats?.total_images || 0,
-      successful_upscales: gen.stats?.successful_upscales || 0,
-      duration_seconds: gen.stats?.duration_seconds || 0,
-      created_at: gen.startedAt,
-      completed_at: gen.completedAt
-    }));
-  
-  allGenerations.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
-  
-  res.json({
-    generations: allGenerations.slice(0, 100),
-    total: allGenerations.length
-  });
 });
 
 // Админ панель (HTML интерфейс)
@@ -1669,21 +1535,20 @@ app.get('/admin', (req, res) => {
 });
 
 // USER: Получение информации о пользователе
-app.get('/api/user/info', validateApiKey, (req, res) => {
+app.get('/api/user/info', validateApiKey, async (req, res) => {
   const { user, apiKey } = req;
-  const usage = userUsage.get(apiKey) || { count: 0, resetDate: new Date() };
   
   res.json({
     success: true,
-    username: user.userEmail,
-    email: user.userEmail,
-    role: user.role || 'user',
-    status: user.status,
-    monthlyLimit: user.monthlyLimit,
-    currentUsage: usage.count,
-    remainingCredits: user.monthlyLimit === -1 ? 'unlimited' : Math.max(0, user.monthlyLimit - usage.count),
-    resetDate: usage.resetDate,
-    createdAt: user.createdAt
+    username: user.username,
+    email: user.username,
+    role: user.is_admin ? 'admin' : 'user',
+    status: user.is_blocked ? 'blocked' : 'active',
+    monthlyLimit: user.monthly_limit,
+    currentUsage: user.usage_count,
+    remainingCredits: user.monthly_limit === -1 ? 'unlimited' : Math.max(0, user.monthly_limit - user.usage_count),
+    resetDate: user.reset_date,
+    createdAt: user.created_at
   });
 });
 
@@ -1691,7 +1556,8 @@ app.get('/api/user/info', validateApiKey, (req, res) => {
 app.get('/', (req, res) => {
   res.json({
     name: 'Midjourney API Service',
-    version: '2.2.0',
+    version: '3.0.0',
+    database: 'PostgreSQL',
     endpoints: {
       health: '/health',
       admin: '/admin',
@@ -1707,14 +1573,9 @@ app.get('/', (req, res) => {
       }
     },
     changes: {
-      '2.1.0': 'Добавлена асинхронная генерация с проверкой статуса',
-      '2.1.1': 'Исправлена проблема с upscale - добавлены правильные headers и проверка возраста кнопок',
-      '2.1.2': 'Добавлена обработка временных вложений (ephemeral) и ожидание постоянных URL',
-      '2.1.3': 'Упрощена логика upscale - работаем с временными вложениями напрямую',
-      '2.1.4': 'Добавлено ожидание преобразования временных вложений в постоянные',
-      '2.1.5': 'Использование встроенного метода Midjourney для upscale',
-      '2.2.0': 'Добавлен endpoint для полной генерации с автоматическим upscale всех вариантов!',
-      '2.2.1': 'Добавлена поддержка параметра wait=true для синхронного ожидания результата'
+      '3.0.0': 'Миграция на PostgreSQL, улучшенная обработка временных вложений',
+      '2.2.1': 'Добавлена поддержка параметра wait=true для синхронного ожидания результата',
+      '2.2.0': 'Добавлен endpoint для полной генерации с автоматическим upscale всех вариантов'
     }
   });
 });
@@ -1727,9 +1588,9 @@ app.get('/api/test/message/:messageId', validateApiKey, async (req, res) => {
     
     console.log(`🔍 Проверяем сообщения в канале для ${messageId}`);
     
-    const response = await fetch(`https://discord.com/api/v9/channels/${user.channelId}/messages?limit=10`, {
+    const response = await fetch(`https://discord.com/api/v9/channels/${user.channel_id}/messages?limit=10`, {
       headers: {
-        'Authorization': user.salaiToken,
+        'Authorization': user.salai_token,
         'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36'
       }
     });
@@ -1779,6 +1640,7 @@ app.get('/api/test/message/:messageId', validateApiKey, async (req, res) => {
       content: targetMessage.content || '',
       has_attachments: (targetMessage.attachments || []).length > 0,
       attachment_url: targetMessage.attachments?.[0]?.url,
+      is_ephemeral: targetMessage.attachments?.[0]?.url?.includes('ephemeral') || false,
       components_count: components.length,
       buttons: buttons,
       created_at: targetMessage.timestamp,
@@ -1794,32 +1656,57 @@ app.get('/api/test/message/:messageId', validateApiKey, async (req, res) => {
 // Запуск сервера
 const PORT = process.env.PORT || 8080;
 
-init().then(() => {
-  const server = app.listen(PORT, '0.0.0.0', () => {
-    console.log(`🚀 Супер Midjourney API запущен на порту ${PORT}`);
-    console.log(`📊 Health check: http://localhost:${PORT}/health`);
-    console.log(`👥 Admin панель: http://localhost:${PORT}/admin`);
-    console.log(`🎨 API генерации: POST http://localhost:${PORT}/api/generate`);
-    console.log(`📍 API статуса: GET http://localhost:${PORT}/api/task/:taskId`);
-    console.log(`🔍 API upscale: POST http://localhost:${PORT}/api/upscale`);
-    console.log(`✨ API полной генерации: POST http://localhost:${PORT}/api/generate-full`);
-    console.log(`🌍 Среда: ${process.env.NODE_ENV || 'development'}`);
-  });
-  
-  // Graceful shutdown
-  process.on('SIGTERM', () => {
-    console.log('SIGTERM signal received: closing HTTP server');
-    server.close(() => {
-      console.log('HTTP server closed');
-      process.exit(0);
+// Инициализация и запуск
+async function start() {
+  try {
+    // Инициализируем базу данных
+    await initDatabase();
+    console.log('✅ База данных PostgreSQL инициализирована');
+    
+    // Запускаем периодический сброс лимитов
+    setInterval(async () => {
+      try {
+        await users.resetMonthlyUsage();
+        console.log('🔄 Проверка месячных лимитов выполнена');
+      } catch (error) {
+        console.error('❌ Ошибка сброса лимитов:', error);
+      }
+    }, 3600000); // Каждый час
+    
+    const server = app.listen(PORT, '0.0.0.0', () => {
+      console.log(`🚀 Midjourney API запущен на порту ${PORT}`);
+      console.log(`📊 База данных: PostgreSQL`);
+      console.log(`📊 Health check: http://localhost:${PORT}/health`);
+      console.log(`👥 Admin панель: http://localhost:${PORT}/admin`);
+      console.log(`🎨 API генерации: POST http://localhost:${PORT}/api/generate`);
+      console.log(`📍 API статуса: GET http://localhost:${PORT}/api/task/:taskId`);
+      console.log(`🔍 API upscale: POST http://localhost:${PORT}/api/upscale`);
+      console.log(`✨ API полной генерации: POST http://localhost:${PORT}/api/generate-full`);
+      console.log(`🌍 Среда: ${process.env.NODE_ENV || 'development'}`);
     });
-  });
+    
+    // Graceful shutdown
+    process.on('SIGTERM', () => {
+      console.log('SIGTERM signal received: closing HTTP server');
+      server.close(() => {
+        console.log('HTTP server closed');
+        process.exit(0);
+      });
+    });
 
-  process.on('SIGINT', () => {
-    console.log('SIGINT signal received: closing HTTP server');
-    server.close(() => {
-      console.log('HTTP server closed');
-      process.exit(0);
+    process.on('SIGINT', () => {
+      console.log('SIGINT signal received: closing HTTP server');
+      server.close(() => {
+        console.log('HTTP server closed');
+        process.exit(0);
+      });
     });
-  });
-});
+    
+  } catch (error) {
+    console.error('❌ Ошибка запуска сервера:', error);
+    process.exit(1);
+  }
+}
+
+// Запускаем
+start();
