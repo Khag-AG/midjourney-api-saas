@@ -325,7 +325,7 @@ app.get('/admin/users/:apiKey', async (req, res) => {
 // ADMIN: Обновление пользователя
 app.put('/admin/users/:apiKey', async (req, res) => {
   const { apiKey } = req.params;
-  const { monthly_limit, is_admin } = req.body;
+  const { username, monthly_limit, is_admin } = req.body;
   
   try {
     const user = await users.getByApiKey(apiKey);
@@ -333,16 +333,34 @@ app.put('/admin/users/:apiKey', async (req, res) => {
       return res.status(404).json({ error: 'Пользователь не найден' });
     }
     
-    if (monthly_limit !== undefined) {
-      await users.updateLimit(apiKey, is_admin ? -1 : monthly_limit);
+    // Подготавливаем объект обновлений
+    const updates = {};
+    
+    if (username !== undefined && username !== user.username) {
+      updates.username = username;
     }
     
-    const updatedUser = await users.getByApiKey(apiKey);
+    if (is_admin !== undefined && is_admin !== user.is_admin) {
+      updates.is_admin = is_admin;
+    }
     
-    console.log(`✏️ Пользователь обновлен: ${updatedUser.username}`);
+    if (monthly_limit !== undefined && monthly_limit !== user.monthly_limit) {
+      updates.monthly_limit = is_admin ? -1 : monthly_limit;
+    }
     
-    res.json({ success: true, user: updatedUser });
+    // Если есть что обновлять
+    if (Object.keys(updates).length > 0) {
+      const updatedUser = await users.updateUser(apiKey, updates);
+      
+      console.log(`✏️ Пользователь обновлен: ${updatedUser.username}`);
+      
+      res.json({ success: true, user: updatedUser });
+    } else {
+      res.json({ success: true, message: 'Нет изменений для обновления' });
+    }
+    
   } catch (error) {
+    console.error('Ошибка обновления пользователя:', error);
     res.status(500).json({ error: error.message });
   }
 });

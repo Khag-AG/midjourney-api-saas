@@ -128,6 +128,49 @@ const users = {
     return result.rows[0];
   },
 
+  // Добавьте эту функцию в объект users в файле database.js после функции updateLimit:
+
+  // Полное обновление пользователя
+  async updateUser(apiKey, updates) {
+    const { username, is_admin, monthly_limit } = updates;
+    
+    // Строим динамический запрос
+    const updateFields = [];
+    const values = [];
+    let paramIndex = 1;
+    
+    if (username !== undefined) {
+      updateFields.push(`username = $${paramIndex++}`);
+      values.push(username);
+    }
+    
+    if (is_admin !== undefined) {
+      updateFields.push(`is_admin = $${paramIndex++}`);
+      values.push(is_admin);
+    }
+    
+    if (monthly_limit !== undefined) {
+      updateFields.push(`monthly_limit = $${paramIndex++}`);
+      values.push(monthly_limit);
+    }
+    
+    if (updateFields.length === 0) {
+      throw new Error('No fields to update');
+    }
+    
+    values.push(apiKey); // Для WHERE условия
+    
+    const query = `
+      UPDATE users 
+      SET ${updateFields.join(', ')}
+      WHERE api_key = $${paramIndex}
+      RETURNING *
+    `;
+    
+    const result = await pool.query(query, values);
+    return result.rows[0];
+  },
+
   // Получить количество пользователей
   async count() {
     const result = await pool.query('SELECT COUNT(*) FROM users');
